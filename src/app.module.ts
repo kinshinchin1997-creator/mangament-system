@@ -21,14 +21,17 @@ import { CampusModule } from './modules/campus/campus.module';
 import { TeacherModule } from './modules/teacher/teacher.module';
 import { StudentModule } from './modules/student/student.module';
 import { CoursePackageModule } from './modules/course-package/course-package.module';
+import { ContractModule } from './modules/contract/contract.module';
 
 // ============================================
-// 核心财务模块 ⭐
+// 核心财务模块 ⭐ (教培现金流核心)
 // ============================================
-import { ContractModule } from './modules/contract/contract.module';
-import { LessonModule } from './modules/lesson/lesson.module';
-import { RefundModule } from './modules/refund/refund.module';
-import { FinanceModule } from './modules/finance/finance.module';
+import { PaymentModule } from './modules/payment/payment.module';       // 收款管理
+import { LessonModule } from './modules/lesson/lesson.module';          // 消课管理
+import { RefundModule } from './modules/refund/refund.module';          // 退费管理
+import { CashflowModule } from './modules/cashflow/cashflow.module';    // 现金流核心引擎
+import { ForecastModule } from './modules/forecast/forecast.module';    // 财务预测
+import { DashboardModule } from './modules/dashboard/dashboard.module'; // 仪表盘
 
 // ============================================
 // 报表与审计模块
@@ -58,12 +61,16 @@ import { AuditModule } from './modules/audit/audit.module';
     TeacherModule,
     StudentModule,
     CoursePackageModule,
+    ContractModule,
 
-    // ======== 核心财务 ⭐ ========
-    ContractModule,   // 预收款入口
-    LessonModule,     // 收入确认
-    RefundModule,     // 资金流出
-    FinanceModule,    // 资金追踪
+    // ======== 核心财务模块 ⭐ ========
+    // 现金流模型: 预收款(Payment) -> 消课确收(Lesson) -> 退费(Refund)
+    PaymentModule,    // 收款入口（合同收款）→ 产生预收款
+    LessonModule,     // 消课记录 → 预收款转确认收入
+    RefundModule,     // 退费管理 → 资金流出
+    CashflowModule,   // 现金流核心 → 资金追踪、日结、收入确认
+    ForecastModule,   // 财务预测 → 现金流/收入预测、风险预警
+    DashboardModule,  // 仪表盘 → 多角色数据看板
 
     // ======== 报表与审计 ========
     ReportModule,
