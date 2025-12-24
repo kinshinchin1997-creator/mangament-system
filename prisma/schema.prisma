@@ -1,0 +1,489 @@
+// ============================================
+// 教培行业现金流管理系统 - 数据模型
+// 核心业务：预收 -> 消课 -> 退费
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 一、组织架构模块
+// ============================================
+
+/// 校区表 - 多校区支持
+model Campus {
+  id          String   @id @default(uuid())
+  code        String   @unique @db.VarChar(32)  // 校区编码
+  name        String   @db.VarChar(100)
+  address     String?  @db.VarChar(255)
+  phone       String?  @db.VarChar(20)
+  status      Int      @default(1)  // 1-正常 0-停用
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?  @db.VarChar(36)
+  
+  // 关联
+  users       User[]
+  teachers    Teacher[]
+  students    Student[]
+  contracts   Contract[]
+  coursePackages CoursePackage[]
+  
+  @@map("t_campus")
+}
+
+/// 用户表 - 系统操作员
+model User {
+  id          String   @id @default(uuid())
+  username    String   @unique @db.VarChar(50)
+  password    String   @db.VarChar(255)
+  realName    String   @db.VarChar(50)
+  phone       String?  @db.VarChar(20)
+  email       String?  @db.VarChar(100)
+  status      Int      @default(1)  // 1-正常 0-停用
+  
+  campusId    String?  @db.VarChar(36)
+  campus      Campus?  @relation(fields: [campusId], references: [id])
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastLoginAt DateTime?
+  
+  // RBAC关联
+  userRoles   UserRole[]
+  
+  // 审计关联 - 记录谁做的操作
+  createdContracts    Contract[]       @relation("ContractCreator")
+  approvedRefunds     Refund[]         @relation("RefundApprover")
+  createdLessonRecords LessonRecord[]  @relation("LessonRecordCreator")
+  
+  @@map("t_user")
+}
+
+/// 角色表
+model Role {
+  id          String   @id @default(uuid())
+  code        String   @unique @db.VarChar(50)  // BOSS, FINANCE, CAMPUS_MANAGER
+  name        String   @db.VarChar(50)
+  description String?  @db.VarChar(255)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  userRoles   UserRole[]
+  permissions RolePermission[]
+  
+  @@map("t_role")
+}
+
+/// 权限表
+model Permission {
+  id          String   @id @default(uuid())
+  code        String   @unique @db.VarChar(100)  // contract:create, refund:approve
+  name        String   @db.VarChar(100)
+  module      String   @db.VarChar(50)  // 模块分组
+  
+  createdAt   DateTime @default(now())
+  
+  roles       RolePermission[]
+  
+  @@map("t_permission")
+}
+
+/// 用户-角色关联表
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String   @db.VarChar(36)
+  roleId    String   @db.VarChar(36)
+  
+  user      User     @relation(fields: [userId], references: [id])
+  role      Role     @relation(fields: [roleId], references: [id])
+  
+  createdAt DateTime @default(now())
+  
+  @@unique([userId, roleId])
+  @@map("t_user_role")
+}
+
+/// 角色-权限关联表
+model RolePermission {
+  id           String   @id @default(uuid())
+  roleId       String   @db.VarChar(36)
+  permissionId String   @db.VarChar(36)
+  
+  role         Role       @relation(fields: [roleId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  
+  createdAt    DateTime @default(now())
+  
+  @@unique([roleId, permissionId])
+  @@map("t_role_permission")
+}
+
+// ============================================
+// 二、教学资源模块
+// ============================================
+
+/// 教师表
+model Teacher {
+  id          String   @id @default(uuid())
+  code        String   @unique @db.VarChar(32)  // 工号
+  name        String   @db.VarChar(50)
+  phone       String?  @db.VarChar(20)
+  status      Int      @default(1)  // 1-在职 0-离职
+  
+  campusId    String   @db.VarChar(36)
+  campus      Campus   @relation(fields: [campusId], references: [id])
+  
+  // 薪酬相关(课时费)
+  hourlyRate  Decimal  @db.Decimal(10, 2)  // 课时单价
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  lessonRecords LessonRecord[]
+  
+  @@map("t_teacher")
+}
+
+/// 学员表
+model Student {
+  id          String   @id @default(uuid())
+  code        String   @unique @db.VarChar(32)  // 学号
+  name        String   @db.VarChar(50)
+  phone       String?  @db.VarChar(20)
+  parentName  String?  @db.VarChar(50)
+  parentPhone String   @db.VarChar(20)
+  status      Int      @default(1)  // 1-在读 2-结业 3-退学
+  
+  campusId    String   @db.VarChar(36)
+  campus      Campus   @relation(fields: [campusId], references: [id])
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  contracts   Contract[]
+  lessonRecords LessonRecord[]
+  
+  @@map("t_student")
+}
+
+/// 课包/课程产品表
+model CoursePackage {
+  id              String   @id @default(uuid())
+  code            String   @unique @db.VarChar(32)
+  name            String   @db.VarChar(100)
+  category        String   @db.VarChar(50)  // 分类：美术、音乐、编程等
+  
+  // 课包定价
+  standardPrice   Decimal  @db.Decimal(10, 2)  // 标准单价(每课时)
+  totalLessons    Int                          // 总课时数
+  totalAmount     Decimal  @db.Decimal(10, 2)  // 课包总价
+  
+  // 有效期
+  validDays       Int      @default(365)       // 有效天数
+  
+  campusId        String?  @db.VarChar(36)     // null表示总部课包，全校区可用
+  campus          Campus?  @relation(fields: [campusId], references: [id])
+  
+  status          Int      @default(1)  // 1-在售 0-停售
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  contracts       Contract[]
+  
+  @@map("t_course_package")
+}
+
+// ============================================
+// 三、核心业务模块 - 预收/消课/退费
+// ============================================
+
+/// 合同表 - 预收款核心表
+/// 【重要】一份合同 = 一笔预收款 = 一个课包购买记录
+model Contract {
+  id              String   @id @default(uuid())
+  contractNo      String   @unique @db.VarChar(32)  // 合同编号 HT20241224001
+  
+  // 关联
+  studentId       String   @db.VarChar(36)
+  student         Student  @relation(fields: [studentId], references: [id])
+  
+  campusId        String   @db.VarChar(36)
+  campus          Campus   @relation(fields: [campusId], references: [id])
+  
+  packageId       String   @db.VarChar(36)
+  package         CoursePackage @relation(fields: [packageId], references: [id])
+  
+  // ====== 金额字段（核心，不可修改，只能追加记录）======
+  totalAmount     Decimal  @db.Decimal(10, 2)  // 合同总金额
+  paidAmount      Decimal  @db.Decimal(10, 2)  // 已收金额
+  discountAmount  Decimal  @default(0) @db.Decimal(10, 2)  // 优惠金额
+  
+  // ====== 课时字段 ======
+  totalLessons    Int                          // 购买课时数
+  usedLessons     Int      @default(0)         // 已消课时数
+  remainLessons   Int                          // 剩余课时数(冗余，便于查询)
+  
+  // ====== 有效期 ======
+  startDate       DateTime @db.Date
+  endDate         DateTime @db.Date
+  
+  // ====== 状态 ======
+  status          Int      @default(1)  // 1-正常 2-已完结 3-已退费 4-已过期
+  
+  // ====== 支付信息 ======
+  payMethod       String   @db.VarChar(20)  // CASH/WECHAT/ALIPAY/BANK/POS
+  payTime         DateTime?
+  
+  // ====== 审计字段 ======
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdById     String   @db.VarChar(36)
+  createdBy       User     @relation("ContractCreator", fields: [createdById], references: [id])
+  
+  // 原始数据快照(JSON)，防止关联数据变更后丢失历史
+  snapshotData    Json?
+  
+  // 关联
+  lessonRecords   LessonRecord[]
+  refunds         Refund[]
+  cashFlows       CashFlow[]
+  
+  @@index([studentId])
+  @@index([campusId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("t_contract")
+}
+
+/// 消课记录表 - 每一次上课扣课时
+model LessonRecord {
+  id              String   @id @default(uuid())
+  recordNo        String   @unique @db.VarChar(32)  // 消课单号
+  
+  // 关联
+  contractId      String   @db.VarChar(36)
+  contract        Contract @relation(fields: [contractId], references: [id])
+  
+  studentId       String   @db.VarChar(36)
+  student         Student  @relation(fields: [studentId], references: [id])
+  
+  teacherId       String   @db.VarChar(36)
+  teacher         Teacher  @relation(fields: [teacherId], references: [id])
+  
+  // ====== 消课信息 ======
+  lessonDate      DateTime @db.Date                 // 上课日期
+  lessonCount     Decimal  @db.Decimal(5, 2)        // 消耗课时数(支持0.5课时)
+  lessonAmount    Decimal  @db.Decimal(10, 2)       // 消耗金额(课时*单价)
+  
+  // 课时单价(记录时的价格，避免后续价格变动影响历史)
+  unitPrice       Decimal  @db.Decimal(10, 2)
+  
+  // ====== 消课前后状态快照 ======
+  beforeRemain    Int                               // 消课前剩余课时
+  afterRemain     Int                               // 消课后剩余课时
+  
+  // ====== 状态 ======
+  status          Int      @default(1)  // 1-正常 2-已撤销
+  revokeReason    String?  @db.VarChar(255)
+  revokedAt       DateTime?
+  
+  // ====== 审计字段 ======
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdById     String   @db.VarChar(36)
+  createdBy       User     @relation("LessonRecordCreator", fields: [createdById], references: [id])
+  
+  remark          String?  @db.VarChar(255)
+  
+  @@index([contractId])
+  @@index([studentId])
+  @@index([teacherId])
+  @@index([lessonDate])
+  @@map("t_lesson_record")
+}
+
+/// 退费申请表
+model Refund {
+  id              String   @id @default(uuid())
+  refundNo        String   @unique @db.VarChar(32)  // 退费单号 TF20241224001
+  
+  // 关联
+  contractId      String   @db.VarChar(36)
+  contract        Contract @relation(fields: [contractId], references: [id])
+  
+  // ====== 退费计算 ======
+  remainLessons   Int                              // 申请时剩余课时
+  unitPrice       Decimal  @db.Decimal(10, 2)      // 课时单价
+  refundablAmount Decimal  @db.Decimal(10, 2)      // 可退金额(剩余课时*单价)
+  deductAmount    Decimal  @default(0) @db.Decimal(10, 2)  // 扣除金额(违约金等)
+  actualAmount    Decimal  @db.Decimal(10, 2)      // 实退金额
+  
+  // ====== 退费原因 ======
+  reason          String   @db.VarChar(500)
+  refundType      String   @db.VarChar(20)  // NORMAL-正常退费 EXPIRE-过期退费 TRANSFER-转让
+  
+  // ====== 审批流程 ======
+  status          Int      @default(0)  // 0-待审批 1-已通过 2-已驳回 3-已完成(已打款)
+  approvedAt      DateTime?
+  approvedById    String?  @db.VarChar(36)
+  approvedBy      User?    @relation("RefundApprover", fields: [approvedById], references: [id])
+  approveRemark   String?  @db.VarChar(255)
+  
+  // ====== 打款信息 ======
+  refundMethod    String?  @db.VarChar(20)  // 退款方式
+  refundAccount   String?  @db.VarChar(100) // 退款账户
+  refundTime      DateTime?
+  
+  // ====== 审计字段 ======
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // 申请时的合同状态快照
+  snapshotData    Json?
+  
+  cashFlows       CashFlow[]
+  
+  @@index([contractId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("t_refund")
+}
+
+// ============================================
+// 四、财务流水模块
+// ============================================
+
+/// 现金流水表 - 所有资金变动记录
+/// 【核心原则】只增不改，每一笔都有迹可循
+model CashFlow {
+  id              String   @id @default(uuid())
+  flowNo          String   @unique @db.VarChar(32)  // 流水号
+  
+  // ====== 关联业务 ======
+  bizType         String   @db.VarChar(20)  // CONTRACT-合同收款 REFUND-退费 ADJUST-调整
+  bizId           String   @db.VarChar(36)  // 关联的业务ID
+  bizNo           String   @db.VarChar(32)  // 关联的业务单号
+  
+  contractId      String?  @db.VarChar(36)
+  contract        Contract? @relation(fields: [contractId], references: [id])
+  
+  refundId        String?  @db.VarChar(36)
+  refund          Refund?  @relation(fields: [refundId], references: [id])
+  
+  // ====== 金额信息 ======
+  direction       Int                        // 1-收入 -1-支出
+  amount          Decimal  @db.Decimal(10, 2)
+  
+  // 收支前后余额(校区维度)
+  beforeBalance   Decimal  @db.Decimal(12, 2)
+  afterBalance    Decimal  @db.Decimal(12, 2)
+  
+  // ====== 支付信息 ======
+  payMethod       String   @db.VarChar(20)
+  
+  // ====== 所属校区 ======
+  campusId        String   @db.VarChar(36)
+  
+  // ====== 备注 ======
+  remark          String?  @db.VarChar(255)
+  
+  // ====== 审计字段 ======
+  createdAt       DateTime @default(now())
+  createdById     String   @db.VarChar(36)
+  
+  @@index([bizType, bizId])
+  @@index([campusId])
+  @@index([createdAt])
+  @@map("t_cash_flow")
+}
+
+/// 财务日结表 - 每日对账汇总
+model DailySettlement {
+  id              String   @id @default(uuid())
+  
+  campusId        String   @db.VarChar(36)
+  settleDate      DateTime @db.Date
+  
+  // ====== 收入汇总 ======
+  contractCount   Int      @default(0)          // 新签合同数
+  contractAmount  Decimal  @default(0) @db.Decimal(12, 2)  // 合同收款
+  
+  // ====== 支出汇总 ======
+  refundCount     Int      @default(0)          // 退费笔数
+  refundAmount    Decimal  @default(0) @db.Decimal(12, 2)  // 退费金额
+  
+  // ====== 消课汇总 ======
+  lessonCount     Decimal  @default(0) @db.Decimal(10, 2)  // 消课课时
+  lessonAmount    Decimal  @default(0) @db.Decimal(12, 2)  // 消课金额(确认收入)
+  
+  // ====== 期末数据 ======
+  endBalance      Decimal  @db.Decimal(12, 2)   // 当日期末预收款余额
+  
+  // ====== 状态 ======
+  status          Int      @default(0)  // 0-未确认 1-已确认
+  confirmedAt     DateTime?
+  confirmedById   String?  @db.VarChar(36)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@unique([campusId, settleDate])
+  @@map("t_daily_settlement")
+}
+
+// ============================================
+// 五、系统配置模块
+// ============================================
+
+/// 系统配置表
+model SystemConfig {
+  id          String   @id @default(uuid())
+  configKey   String   @unique @db.VarChar(100)
+  configValue String   @db.Text
+  configType  String   @db.VarChar(20)  // STRING/NUMBER/JSON/BOOLEAN
+  remark      String?  @db.VarChar(255)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("t_system_config")
+}
+
+/// 操作日志表 - 关键操作审计
+model OperationLog {
+  id          String   @id @default(uuid())
+  
+  userId      String   @db.VarChar(36)
+  userName    String   @db.VarChar(50)
+  
+  module      String   @db.VarChar(50)   // 模块
+  action      String   @db.VarChar(50)   // 操作类型
+  bizType     String?  @db.VarChar(50)   // 业务类型
+  bizId       String?  @db.VarChar(36)   // 业务ID
+  
+  // 操作前后数据(JSON)
+  beforeData  Json?
+  afterData   Json?
+  
+  ip          String?  @db.VarChar(50)
+  userAgent   String?  @db.VarChar(255)
+  
+  createdAt   DateTime @default(now())
+  
+  @@index([userId])
+  @@index([module, action])
+  @@index([bizType, bizId])
+  @@index([createdAt])
+  @@map("t_operation_log")
+}
+
