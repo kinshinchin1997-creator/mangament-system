@@ -271,7 +271,7 @@ export class RefundService {
         campusId: refund.campusId,
         createdById: currentUser.userId,
         remark: `退费: ${refund.refundNo}`,
-        snapshotData: refund.snapshotData,
+        snapshotData: refund.snapshotData as Record<string, any> | undefined,
       });
     });
 
@@ -321,7 +321,7 @@ export class RefundService {
   private getRefundTypeName(type: string): string {
     const types: Record<string, string> = {
       NORMAL: '正常退费',
-      TRANSFER: '转校区',
+      TRANSFER: '转校退',
       TERMINATE: '终止合作',
     };
     return types[type] || type;

@@ -108,7 +108,7 @@ export class ContractService {
         campus: true,
         package: true,
         createdBy: { select: { id: true, realName: true } },
-        lessonRecords: { where: { status: 1 }, orderBy: { lessonDate: 'desc' }, take: 10 },
+        lessonRecords: { where: { status: 1 }, orderBy: { attendDate: 'desc' }, take: 10 },
         refunds: { orderBy: { createdAt: 'desc' } },
       },
     });
@@ -161,4 +161,3 @@ export class ContractService {
     });
   }
 }
-

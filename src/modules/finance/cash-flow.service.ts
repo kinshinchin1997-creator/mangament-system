@@ -11,13 +11,6 @@ export class CashFlowService {
    * 创建合同收款流水（收入）
    */
   async createContractInflow(tx: any, contract: any, userId: string) {
-    const lastFlow = await tx.cashFlow.findFirst({
-      where: { campusId: contract.campusId },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const beforeBalance = lastFlow?.afterBalance?.toNumber() || 0;
-    const afterBalance = DecimalUtil.add(beforeBalance.toString(), contract.paidAmount.toString());
     const flowNo = NumberGenerator.generateCashFlowNo();
 
     return tx.cashFlow.create({
@@ -29,8 +22,6 @@ export class CashFlowService {
         contractId: contract.id,
         direction: 1,
         amount: contract.paidAmount,
-        beforeBalance,
-        afterBalance: DecimalUtil.toNumber(afterBalance),
         payMethod: contract.payMethod,
         campusId: contract.campusId,
         createdById: userId,
@@ -44,14 +35,6 @@ export class CashFlowService {
    */
   async createRefundOutflow(tx: any, refund: any, userId: string) {
     const contract = refund.contract;
-
-    const lastFlow = await tx.cashFlow.findFirst({
-      where: { campusId: contract.campusId },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const beforeBalance = lastFlow?.afterBalance?.toNumber() || 0;
-    const afterBalance = DecimalUtil.subtract(beforeBalance.toString(), refund.actualAmount.toString());
     const flowNo = NumberGenerator.generateCashFlowNo();
 
     return tx.cashFlow.create({
@@ -64,8 +47,6 @@ export class CashFlowService {
         refundId: refund.id,
         direction: -1,
         amount: refund.actualAmount,
-        beforeBalance,
-        afterBalance: DecimalUtil.toNumber(afterBalance),
         payMethod: refund.refundMethod,
         campusId: contract.campusId,
         createdById: userId,
@@ -121,19 +102,15 @@ export class CashFlowService {
       _sum: { amount: true },
     });
 
-    const latestFlow = await this.prisma.cashFlow.findFirst({
-      where: campusId ? { campusId } : {},
-      orderBy: { createdAt: 'desc' },
-    });
+    const netFlow = DecimalUtil.subtract(
+      (incomeStats._sum.amount || 0).toString(),
+      (expenseStats._sum.amount || 0).toString(),
+    );
 
     return {
       income: { count: incomeStats._count, total: incomeStats._sum.amount || 0 },
       expense: { count: expenseStats._count, total: expenseStats._sum.amount || 0 },
-      netFlow: DecimalUtil.subtract(
-        (incomeStats._sum.amount || 0).toString(),
-        (expenseStats._sum.amount || 0).toString(),
-      ),
-      currentBalance: latestFlow?.afterBalance || 0,
+      netFlow: DecimalUtil.toNumber(netFlow),
     };
   }
 
@@ -168,22 +145,21 @@ export class CashFlowService {
 
   async getRevenueRecognitionReport(campusId?: string, startDate?: string, endDate?: string) {
     const where: any = { status: 1 };
-    if (campusId) where.contract = { campusId };
+    if (campusId) where.campusId = campusId;
     if (startDate && endDate) {
-      where.lessonDate = { gte: new Date(startDate), lte: new Date(endDate) };
+      where.attendDate = { gte: new Date(startDate), lte: new Date(endDate) };
     }
 
     const summary = await this.prisma.lessonRecord.aggregate({
       where,
       _count: true,
-      _sum: { lessonCount: true, lessonAmount: true },
+      _sum: { consumedCount: true, consumedAmount: true },
     });
 
     return {
       totalRecords: summary._count,
-      totalLessons: summary._sum.lessonCount || 0,
-      totalRevenue: summary._sum.lessonAmount || 0,
+      totalLessons: summary._sum?.consumedCount || 0,
+      totalRevenue: summary._sum?.consumedAmount || 0,
     };
   }
 }
-

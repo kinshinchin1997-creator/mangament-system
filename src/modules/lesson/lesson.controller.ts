@@ -32,7 +32,7 @@ export class LessonController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
-    return this.lessonService.getStatistics(campusId, teacherId, startDate, endDate);
+    return this.lessonService.getStatistics({ campusId, teacherId, startDate, endDate });
   }
 
   @Get(':id')
@@ -48,4 +48,3 @@ export class LessonController {
     return this.lessonService.revoke(id, reason, user);
   }
 }
-

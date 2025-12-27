@@ -105,7 +105,7 @@ export class PaymentService {
         bizId: newContract.id,
         bizNo: newContract.contractNo,
         contractId: newContract.id,
-        amount: newContract.paidAmount,
+        amount: DecimalUtil.toNumber(newContract.paidAmount.toString()),
         payMethod: newContract.payMethod,
         campusId: newContract.campusId,
         createdById: currentUser.userId,
@@ -277,4 +277,3 @@ export class PaymentService {
     return methods[code] || code;
   }
 }
-

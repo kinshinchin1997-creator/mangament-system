@@ -22,8 +22,8 @@ export class TeacherPerformanceService {
       where,
       _count: true,
       _sum: {
-        lessonCount: true,
-        lessonAmount: true,
+        consumedCount: true,
+        consumedAmount: true,
       },
     });
 
@@ -37,8 +37,8 @@ export class TeacherPerformanceService {
 
     const result = stats.map((s) => {
       const teacher = teacherMap.get(s.teacherId);
-      const lessonCount = s._sum.lessonCount?.toNumber() || 0;
-      const lessonAmount = s._sum.lessonAmount?.toNumber() || 0;
+      const lessonCount = s._sum?.consumedCount || 0;
+      const lessonAmount = s._sum?.consumedAmount?.toNumber() || 0;
       const hourlyRate = teacher?.hourlyRate?.toNumber() || 0;
       const teacherFee = lessonCount * hourlyRate;
 
@@ -65,7 +65,7 @@ export class TeacherPerformanceService {
   async getRanking(query: ReportQueryDto) {
     const performance = await this.getPerformance(query);
 
-    // 按消课金额降序排列
+    // 按消课金额降序排序
     const sorted = [...performance].sort(
       (a, b) => parseFloat(b.lessonAmount) - parseFloat(a.lessonAmount),
     );
@@ -91,7 +91,7 @@ export class TeacherPerformanceService {
 
     const where: any = { teacherId, status: 1 };
     if (query.startDate && query.endDate) {
-      where.lessonDate = {
+      where.attendDate = {
         gte: new Date(query.startDate),
         lte: new Date(query.endDate),
       };
@@ -101,19 +101,19 @@ export class TeacherPerformanceService {
     const summary = await this.prisma.lessonRecord.aggregate({
       where,
       _count: true,
-      _sum: { lessonCount: true, lessonAmount: true },
+      _sum: { consumedCount: true, consumedAmount: true },
     });
 
     // 按日期明细
     const byDate = await this.prisma.lessonRecord.groupBy({
-      by: ['lessonDate'],
+      by: ['attendDate'],
       where,
       _count: true,
-      _sum: { lessonCount: true, lessonAmount: true },
-      orderBy: { lessonDate: 'desc' },
+      _sum: { consumedCount: true, consumedAmount: true },
+      orderBy: { attendDate: 'desc' },
     });
 
-    const lessonCount = summary._sum.lessonCount?.toNumber() || 0;
+    const lessonCount = summary._sum?.consumedCount || 0;
     const hourlyRate = teacher.hourlyRate.toNumber();
     const teacherFee = lessonCount * hourlyRate;
 
@@ -127,14 +127,14 @@ export class TeacherPerformanceService {
       summary: {
         recordCount: summary._count,
         lessonCount,
-        lessonAmount: DecimalUtil.format((summary._sum.lessonAmount?.toNumber() || 0).toString()),
+        lessonAmount: DecimalUtil.format((summary._sum?.consumedAmount?.toNumber() || 0).toString()),
         teacherFee: DecimalUtil.format(teacherFee.toString()),
       },
       byDate: byDate.map((d) => ({
-        date: d.lessonDate,
+        date: d.attendDate,
         recordCount: d._count,
-        lessonCount: d._sum.lessonCount?.toNumber() || 0,
-        lessonAmount: DecimalUtil.format((d._sum.lessonAmount?.toNumber() || 0).toString()),
+        lessonCount: d._sum?.consumedCount || 0,
+        lessonAmount: DecimalUtil.format((d._sum?.consumedAmount?.toNumber() || 0).toString()),
       })),
     };
   }
@@ -143,11 +143,11 @@ export class TeacherPerformanceService {
     const where: any = { status: 1 };
 
     if (query.campusId) {
-      where.contract = { campusId: query.campusId };
+      where.campusId = query.campusId;
     }
 
     if (query.startDate && query.endDate) {
-      where.lessonDate = {
+      where.attendDate = {
         gte: new Date(query.startDate),
         lte: new Date(query.endDate),
       };
@@ -156,4 +156,3 @@ export class TeacherPerformanceService {
     return where;
   }
 }
-

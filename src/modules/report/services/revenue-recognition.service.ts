@@ -23,15 +23,15 @@ export class RevenueRecognitionService {
       where,
       _count: true,
       _sum: {
-        lessonCount: true,
-        lessonAmount: true,
+        consumedCount: true,
+        consumedAmount: true,
       },
     });
 
     return {
       totalRecords: summary._count,
-      totalLessons: summary._sum.lessonCount?.toNumber() || 0,
-      totalRevenue: DecimalUtil.format((summary._sum.lessonAmount?.toNumber() || 0).toString()),
+      totalLessons: summary._sum?.consumedCount || 0,
+      totalRevenue: DecimalUtil.format((summary._sum?.consumedAmount?.toNumber() || 0).toString()),
     };
   }
 
@@ -42,21 +42,21 @@ export class RevenueRecognitionService {
     const where = this.buildWhere(query);
 
     const records = await this.prisma.lessonRecord.groupBy({
-      by: ['lessonDate'],
+      by: ['attendDate'],
       where,
       _count: true,
       _sum: {
-        lessonCount: true,
-        lessonAmount: true,
+        consumedCount: true,
+        consumedAmount: true,
       },
-      orderBy: { lessonDate: 'asc' },
+      orderBy: { attendDate: 'asc' },
     });
 
     return records.map((r) => ({
-      date: r.lessonDate,
+      date: r.attendDate,
       recordCount: r._count,
-      lessonCount: r._sum.lessonCount?.toNumber() || 0,
-      revenue: DecimalUtil.format((r._sum.lessonAmount?.toNumber() || 0).toString()),
+      lessonCount: r._sum?.consumedCount || 0,
+      revenue: DecimalUtil.format((r._sum?.consumedAmount?.toNumber() || 0).toString()),
     }));
   }
 
@@ -93,8 +93,8 @@ export class RevenueRecognitionService {
 
       const cat = categoryMap.get(category);
       cat.recordCount++;
-      cat.lessonCount += record.lessonCount.toNumber();
-      cat.revenue += record.lessonAmount.toNumber();
+      cat.lessonCount += record.consumedCount;
+      cat.revenue += record.consumedAmount.toNumber();
     }
 
     return Array.from(categoryMap.values()).map((cat) => ({
@@ -114,21 +114,21 @@ export class RevenueRecognitionService {
 
     const where: any = {
       status: 1,
-      lessonDate: { gte: today, lt: tomorrow },
+      attendDate: { gte: today, lt: tomorrow },
     };
-    if (campusId) where.contract = { campusId };
+    if (campusId) where.campusId = campusId;
 
     const summary = await this.prisma.lessonRecord.aggregate({
       where,
       _count: true,
-      _sum: { lessonCount: true, lessonAmount: true },
+      _sum: { consumedCount: true, consumedAmount: true },
     });
 
     return {
       date: today.toISOString().slice(0, 10),
       recordCount: summary._count,
-      lessonCount: summary._sum.lessonCount?.toNumber() || 0,
-      revenue: DecimalUtil.format((summary._sum.lessonAmount?.toNumber() || 0).toString()),
+      lessonCount: summary._sum?.consumedCount || 0,
+      revenue: DecimalUtil.format((summary._sum?.consumedAmount?.toNumber() || 0).toString()),
     };
   }
 
@@ -142,21 +142,21 @@ export class RevenueRecognitionService {
 
     const where: any = {
       status: 1,
-      lessonDate: { gte: startOfMonth, lt: startOfNextMonth },
+      attendDate: { gte: startOfMonth, lt: startOfNextMonth },
     };
-    if (campusId) where.contract = { campusId };
+    if (campusId) where.campusId = campusId;
 
     const summary = await this.prisma.lessonRecord.aggregate({
       where,
       _count: true,
-      _sum: { lessonCount: true, lessonAmount: true },
+      _sum: { consumedCount: true, consumedAmount: true },
     });
 
     return {
       month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
       recordCount: summary._count,
-      lessonCount: summary._sum.lessonCount?.toNumber() || 0,
-      revenue: DecimalUtil.format((summary._sum.lessonAmount?.toNumber() || 0).toString()),
+      lessonCount: summary._sum?.consumedCount || 0,
+      revenue: DecimalUtil.format((summary._sum?.consumedAmount?.toNumber() || 0).toString()),
     };
   }
 
@@ -164,11 +164,11 @@ export class RevenueRecognitionService {
     const where: any = { status: 1 };
 
     if (query.campusId) {
-      where.contract = { campusId: query.campusId };
+      where.campusId = query.campusId;
     }
 
     if (query.startDate && query.endDate) {
-      where.lessonDate = {
+      where.attendDate = {
         gte: new Date(query.startDate),
         lte: new Date(query.endDate),
       };
@@ -177,4 +177,3 @@ export class RevenueRecognitionService {
     return where;
   }
 }
-

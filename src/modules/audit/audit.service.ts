@@ -59,7 +59,9 @@ export class AuditService {
    * 获取指定用户的操作日志
    */
   async getLogsByUser(userId: string, query: QueryAuditDto) {
-    return this.getLogs({ ...query, userId });
+    const newQuery = new QueryAuditDto();
+    Object.assign(newQuery, query, { userId });
+    return this.getLogs(newQuery);
   }
 
   /**
@@ -201,4 +203,3 @@ export class AuditService {
     return actionNames[action] || action;
   }
 }
-

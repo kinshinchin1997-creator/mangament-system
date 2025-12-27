@@ -32,18 +32,18 @@ export class CampusComparisonService {
         // 消课（确认收入）
         const lessons = await this.prisma.lessonRecord.aggregate({
           where: {
-            contract: { campusId: campus.id },
+            campusId: campus.id,
             status: 1,
-            ...(dateFilter.createdAt ? { lessonDate: dateFilter.createdAt } : {}),
+            ...(dateFilter.createdAt ? { attendDate: dateFilter.createdAt } : {}),
           },
           _count: true,
-          _sum: { lessonCount: true, lessonAmount: true },
+          _sum: { consumedCount: true, consumedAmount: true },
         });
 
         // 退费
         const refunds = await this.prisma.refund.aggregate({
           where: {
-            contract: { campusId: campus.id },
+            campusId: campus.id,
             status: 3, // 已完成
             ...dateFilter,
           },
@@ -71,8 +71,8 @@ export class CampusComparisonService {
           contractAmount: DecimalUtil.format((contracts._sum.paidAmount?.toNumber() || 0).toString()),
           // 消课
           lessonRecords: lessons._count,
-          lessonCount: lessons._sum.lessonCount?.toNumber() || 0,
-          lessonAmount: DecimalUtil.format((lessons._sum.lessonAmount?.toNumber() || 0).toString()),
+          lessonCount: lessons._sum?.consumedCount || 0,
+          lessonAmount: DecimalUtil.format((lessons._sum?.consumedAmount?.toNumber() || 0).toString()),
           // 退费
           refundCount: refunds._count,
           refundAmount: DecimalUtil.format((refunds._sum.actualAmount?.toNumber() || 0).toString()),
@@ -124,4 +124,3 @@ export class CampusComparisonService {
     return filter;
   }
 }
-
