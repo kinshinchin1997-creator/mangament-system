@@ -31,6 +31,7 @@ import { LessonModule } from './modules/lesson/lesson.module';          // 消�
 import { RefundModule } from './modules/refund/refund.module';          // 退费管理
 import { CashflowModule } from './modules/cashflow/cashflow.module';    // 现金流核心引擎
 import { ForecastModule } from './modules/forecast/forecast.module';    // 财务预测
+import { AlertModule } from './modules/alert/alert.module';            // 现金流预警
 import { DashboardModule } from './modules/dashboard/dashboard.module'; // 仪表盘
 
 // ============================================
@@ -70,6 +71,7 @@ import { AuditModule } from './modules/audit/audit.module';
     RefundModule,     // 退费管理 → 资金流出
     CashflowModule,   // 现金流核心 → 资金追踪、日结、收入确认
     ForecastModule,   // 财务预测 → 现金流/收入预测、风险预警
+    AlertModule,      // 现金流预警 → 规则配置、实时监控
     DashboardModule,  // 仪表盘 → 多角色数据看板
 
     // ======== 报表与审计 ========
