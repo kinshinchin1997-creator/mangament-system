@@ -27,12 +27,7 @@ export class RevenueRecognitionService {
     // 获取所有有效合同
     const contracts = await this.prisma.contract.findMany({
       where,
-      select: {
-        id: true,
-        paidAmount: true,
-        usedLessons: true,
-        totalLessons: true,
-        totalAmount: true,
+      include: {
         campus: { select: { id: true, name: true } },
       },
     });
@@ -117,16 +112,16 @@ export class RevenueRecognitionService {
    */
   async getRecognizedRevenue(startDate: string, endDate: string, campusId?: string) {
     const where: any = {
-      attendDate: {
+      lessonDate: {
         gte: new Date(startDate),
         lte: new Date(endDate),
       },
-      status: 1, // 已完成
+      status: 1, // 正常状态
     };
     if (campusId) where.campusId = campusId;
 
     // 获取消课记录
-    const lessons = await this.prisma.lessonRecord.findMany({
+    const lessons = await this.prisma.lesson.findMany({
       where,
       include: {
         campus: { select: { id: true, name: true } },
@@ -154,9 +149,9 @@ export class RevenueRecognitionService {
       }
 
       const stats = campusStats.get(campusKey)!;
-      stats.lessonCount += l.consumedCount;
+      stats.lessonCount += l.lessonCount;
       stats.recognizedRevenue = DecimalUtil.toNumber(
-        DecimalUtil.add(stats.recognizedRevenue.toString(), l.consumedAmount.toString())
+        DecimalUtil.add(stats.recognizedRevenue.toString(), l.lessonAmount.toString())
       );
     });
 

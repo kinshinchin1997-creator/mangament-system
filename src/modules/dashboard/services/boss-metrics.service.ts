@@ -20,55 +20,45 @@ export class BossMetricsService {
     const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
 
     // 今日收款
-    const todayIncome = await this.prisma.cashFlow.aggregate({
-      where: { direction: 1, createdAt: { gte: today } },
+    const todayIncome = await this.prisma.payment.aggregate({
+      where: { status: 1, paidAt: { gte: today } },
       _sum: { amount: true },
     });
 
     // 本月收款
-    const monthIncome = await this.prisma.cashFlow.aggregate({
-      where: { direction: 1, createdAt: { gte: thisMonth } },
+    const monthIncome = await this.prisma.payment.aggregate({
+      where: { status: 1, paidAt: { gte: thisMonth } },
       _sum: { amount: true },
     });
 
     // 上月收款（用于环比）
-    const lastMonthIncome = await this.prisma.cashFlow.aggregate({
+    const lastMonthIncome = await this.prisma.payment.aggregate({
       where: {
-        direction: 1,
-        createdAt: { gte: lastMonth, lte: lastMonthEnd },
+        status: 1,
+        paidAt: { gte: lastMonth, lte: lastMonthEnd },
       },
       _sum: { amount: true },
     });
 
     // 本月退费
-    const monthRefund = await this.prisma.cashFlow.aggregate({
-      where: { direction: -1, createdAt: { gte: thisMonth } },
-      _sum: { amount: true },
+    const monthRefund = await this.prisma.refund.aggregate({
+      where: { status: 3, refundedAt: { gte: thisMonth } },
+      _sum: { actualAmount: true },
     });
 
     // 本月消课金额
-    const monthLesson = await this.prisma.lessonRecord.aggregate({
-      where: { attendDate: { gte: thisMonth } },
-      _sum: { consumedAmount: true },
+    const monthLesson = await this.prisma.lesson.aggregate({
+      where: { status: 1, lessonDate: { gte: thisMonth } },
+      _sum: { lessonAmount: true },
     });
 
     // 预收余额
     const contracts = await this.prisma.contract.aggregate({
       where: { status: 1 },
-      _sum: { paidAmount: true },
+      _sum: { unearned: true },
     });
 
-    const consumed = await this.prisma.lessonRecord.aggregate({
-      where: { status: 1 },
-      _sum: { consumedAmount: true },
-    });
-
-    const prepaidBalance = DecimalUtil.toNumber(
-      DecimalUtil.subtract(
-        (contracts._sum.paidAmount || 0).toString(),
-        (consumed._sum.consumedAmount || 0).toString()
-      )
-    );
+    const prepaidBalance = Number(contracts._sum.unearned || 0);
 
     // 校区数量
     const campusCount = await this.prisma.campus.count({ where: { status: 1 } });
@@ -88,9 +78,9 @@ export class BossMetricsService {
     return {
       todayIncome: Number(todayIncome._sum.amount || 0),
       monthIncome: currentMonthIncome,
-      monthRefund: Number(monthRefund._sum.amount || 0),
-      monthNetIncome: currentMonthIncome - Number(monthRefund._sum.amount || 0),
-      monthLesson: Number(monthLesson._sum.consumedAmount || 0),
+      monthRefund: Number(monthRefund._sum.actualAmount || 0),
+      monthNetIncome: currentMonthIncome - Number(monthRefund._sum.actualAmount || 0),
+      monthLesson: Number(monthLesson._sum.lessonAmount || 0),
       prepaidBalance,
       campusCount,
       activeStudentCount: activeStudents.length,
@@ -109,34 +99,47 @@ export class BossMetricsService {
 
     const comparison = await Promise.all(
       campuses.map(async (campus) => {
-        const where = {
+        const paymentWhere = {
           campusId: campus.id,
-          createdAt: {
+          status: 1,
+          paidAt: {
+            gte: new Date(startDate),
+            lte: new Date(endDate),
+          },
+        };
+
+        const refundWhere = {
+          campusId: campus.id,
+          status: 3,
+          refundedAt: {
+            gte: new Date(startDate),
+            lte: new Date(endDate),
+          },
+        };
+
+        const lessonWhere = {
+          campusId: campus.id,
+          status: 1,
+          lessonDate: {
             gte: new Date(startDate),
             lte: new Date(endDate),
           },
         };
 
         const [income, refund, lessons] = await Promise.all([
-          this.prisma.cashFlow.aggregate({
-            where: { ...where, direction: 1 },
+          this.prisma.payment.aggregate({
+            where: paymentWhere,
             _sum: { amount: true },
             _count: true,
           }),
-          this.prisma.cashFlow.aggregate({
-            where: { ...where, direction: -1 },
-            _sum: { amount: true },
+          this.prisma.refund.aggregate({
+            where: refundWhere,
+            _sum: { actualAmount: true },
             _count: true,
           }),
-          this.prisma.lessonRecord.aggregate({
-            where: {
-              campusId: campus.id,
-              attendDate: {
-                gte: new Date(startDate),
-                lte: new Date(endDate),
-              },
-            },
-            _sum: { consumedAmount: true, consumedCount: true },
+          this.prisma.lesson.aggregate({
+            where: lessonWhere,
+            _sum: { lessonAmount: true, lessonCount: true },
           }),
         ]);
 
@@ -145,11 +148,11 @@ export class BossMetricsService {
           campusName: campus.name,
           income: Number(income._sum.amount || 0),
           incomeCount: income._count,
-          refund: Number(refund._sum.amount || 0),
+          refund: Number(refund._sum.actualAmount || 0),
           refundCount: refund._count,
-          netIncome: Number(income._sum.amount || 0) - Number(refund._sum.amount || 0),
-          lessonAmount: Number(lessons._sum.consumedAmount || 0),
-          lessonCount: lessons._sum.consumedCount || 0,
+          netIncome: Number(income._sum.amount || 0) - Number(refund._sum.actualAmount || 0),
+          lessonAmount: Number(lessons._sum.lessonAmount || 0),
+          lessonCount: lessons._sum.lessonCount || 0,
         };
       })
     );
@@ -174,24 +177,38 @@ export class BossMetricsService {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    const records = await this.prisma.cashFlow.findMany({
-      where: { createdAt: { gte: startDate } },
-      select: { direction: true, amount: true, createdAt: true },
+    // 获取收款数据
+    const payments = await this.prisma.payment.findMany({
+      where: { status: 1, paidAt: { gte: startDate } },
+      select: { amount: true, paidAt: true },
+    });
+
+    // 获取退费数据
+    const refunds = await this.prisma.refund.findMany({
+      where: { status: 3, refundedAt: { gte: startDate } },
+      select: { actualAmount: true, refundedAt: true },
     });
 
     // 按日期分组
     const dailyData = new Map<string, { income: number; refund: number }>();
 
-    records.forEach((r) => {
-      const date = r.createdAt.toISOString().slice(0, 10);
+    payments.forEach((p) => {
+      const date = p.paidAt.toISOString().slice(0, 10);
       if (!dailyData.has(date)) {
         dailyData.set(date, { income: 0, refund: 0 });
       }
       const data = dailyData.get(date)!;
-      if (r.direction === 1) {
-        data.income += Number(r.amount);
-      } else {
-        data.refund += Number(r.amount);
+      data.income += Number(p.amount);
+    });
+
+    refunds.forEach((r) => {
+      if (r.refundedAt) {
+        const date = r.refundedAt.toISOString().slice(0, 10);
+        if (!dailyData.has(date)) {
+          dailyData.set(date, { income: 0, refund: 0 });
+        }
+        const data = dailyData.get(date)!;
+        data.refund += Number(r.actualAmount);
       }
     });
 
@@ -221,16 +238,16 @@ export class BossMetricsService {
     });
 
     // 退费率
-    const monthIncome = await this.prisma.cashFlow.aggregate({
-      where: { direction: 1, createdAt: { gte: thisMonth } },
+    const monthIncome = await this.prisma.payment.aggregate({
+      where: { status: 1, paidAt: { gte: thisMonth } },
       _sum: { amount: true },
     });
-    const monthRefund = await this.prisma.cashFlow.aggregate({
-      where: { direction: -1, createdAt: { gte: thisMonth } },
-      _sum: { amount: true },
+    const monthRefund = await this.prisma.refund.aggregate({
+      where: { status: 3, refundedAt: { gte: thisMonth } },
+      _sum: { actualAmount: true },
     });
     const income = Number(monthIncome._sum.amount || 0);
-    const refund = Number(monthRefund._sum.amount || 0);
+    const refund = Number(monthRefund._sum.actualAmount || 0);
     const refundRate = income > 0 ? (refund / income) * 100 : 0;
 
     // 平均客单价
@@ -240,17 +257,16 @@ export class BossMetricsService {
     });
 
     // 消课率（本月消课金额 / 预收余额）
-    const monthLesson = await this.prisma.lessonRecord.aggregate({
-      where: { attendDate: { gte: thisMonth } },
-      _sum: { consumedAmount: true },
+    const monthLesson = await this.prisma.lesson.aggregate({
+      where: { status: 1, lessonDate: { gte: thisMonth } },
+      _sum: { lessonAmount: true },
     });
 
     return {
       newContracts,
       refundRate: Math.round(refundRate * 100) / 100,
       avgContractValue: Number(avgContractValue._avg.paidAmount || 0),
-      monthLessonAmount: Number(monthLesson._sum.consumedAmount || 0),
+      monthLessonAmount: Number(monthLesson._sum.lessonAmount || 0),
     };
   }
 }
-

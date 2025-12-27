@@ -25,28 +25,47 @@ export class CashflowForecastService {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - historyDays);
 
-    const where: any = { createdAt: { gte: startDate } };
-    if (campusId) where.campusId = campusId;
+    const paymentWhere: any = { status: 1, paidAt: { gte: startDate } };
+    const refundWhere: any = { status: 3, refundedAt: { gte: startDate } };
+    if (campusId) {
+      paymentWhere.campusId = campusId;
+      refundWhere.campusId = campusId;
+    }
 
-    const records = await this.prisma.cashFlow.findMany({
-      where,
-      select: { direction: true, amount: true, createdAt: true },
-      orderBy: { createdAt: 'asc' },
+    // 获取收款记录
+    const payments = await this.prisma.payment.findMany({
+      where: paymentWhere,
+      select: { amount: true, paidAt: true },
+      orderBy: { paidAt: 'asc' },
+    });
+
+    // 获取退费记录
+    const refunds = await this.prisma.refund.findMany({
+      where: refundWhere,
+      select: { actualAmount: true, refundedAt: true },
+      orderBy: { refundedAt: 'asc' },
     });
 
     // 按日汇总
     const dailyStats = new Map<string, { inflow: number; outflow: number }>();
-    records.forEach((r) => {
-      const dateKey = r.createdAt.toISOString().slice(0, 10);
+    
+    payments.forEach((p) => {
+      const dateKey = p.paidAt.toISOString().slice(0, 10);
       if (!dailyStats.has(dateKey)) {
         dailyStats.set(dateKey, { inflow: 0, outflow: 0 });
       }
       const stat = dailyStats.get(dateKey)!;
-      const amount = Number(r.amount);
-      if (r.direction === 1) {
-        stat.inflow += amount;
-      } else {
-        stat.outflow += amount;
+      stat.inflow += Number(p.amount);
+    });
+
+    refunds.forEach((r) => {
+      if (r.refundedAt) {
+        const dateKey = r.refundedAt.toISOString().slice(0, 10);
+        if (!dailyStats.has(dateKey)) {
+          dailyStats.set(dateKey, { inflow: 0, outflow: 0 });
+        }
+        const stat = dailyStats.get(dateKey)!;
+        stat.outflow += Number(r.actualAmount);
       }
     });
 
@@ -118,27 +137,45 @@ export class CashflowForecastService {
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - 12);
 
-    const where: any = { createdAt: { gte: startDate } };
-    if (campusId) where.campusId = campusId;
+    const paymentWhere: any = { status: 1, paidAt: { gte: startDate } };
+    const refundWhere: any = { status: 3, refundedAt: { gte: startDate } };
+    if (campusId) {
+      paymentWhere.campusId = campusId;
+      refundWhere.campusId = campusId;
+    }
 
-    const records = await this.prisma.cashFlow.findMany({
-      where,
-      select: { direction: true, amount: true, createdAt: true },
+    // 获取收款记录
+    const payments = await this.prisma.payment.findMany({
+      where: paymentWhere,
+      select: { amount: true, paidAt: true },
+    });
+
+    // 获取退费记录
+    const refunds = await this.prisma.refund.findMany({
+      where: refundWhere,
+      select: { actualAmount: true, refundedAt: true },
     });
 
     // 按月汇总
     const monthlyStats = new Map<string, { inflow: number; outflow: number }>();
-    records.forEach((r) => {
-      const monthKey = r.createdAt.toISOString().slice(0, 7);
+    
+    payments.forEach((p) => {
+      const monthKey = p.paidAt.toISOString().slice(0, 7);
       if (!monthlyStats.has(monthKey)) {
         monthlyStats.set(monthKey, { inflow: 0, outflow: 0 });
       }
       const stat = monthlyStats.get(monthKey)!;
-      const amount = Number(r.amount);
-      if (r.direction === 1) {
-        stat.inflow += amount;
-      } else {
-        stat.outflow += amount;
+      stat.inflow += Number(p.amount);
+    });
+
+    refunds.forEach((r) => {
+      if (r.refundedAt) {
+        const monthKey = r.refundedAt.toISOString().slice(0, 7);
+        if (!monthlyStats.has(monthKey)) {
+          monthlyStats.set(monthKey, { inflow: 0, outflow: 0 });
+        }
+        const stat = monthlyStats.get(monthKey)!;
+        stat.outflow += Number(r.actualAmount);
       }
     });
 
@@ -192,4 +229,3 @@ export class CashflowForecastService {
     };
   }
 }
-

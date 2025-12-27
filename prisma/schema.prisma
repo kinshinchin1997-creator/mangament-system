@@ -1,6 +1,11 @@
 // ============================================
 // 教培行业现金流管理系统 - 数据模型
 // 核心业务：预收(Payment) -> 消课(Lesson) -> 退费(Refund)
+// 
+// 核心概念：
+// - 预收款 = 收到的钱，形成负债（欠学员课时）
+// - 消课 = 确认收入，减少负债
+// - 未消课金额 = 预收款余额 = 剩余课时 × 课单价
 // ============================================
 
 generator client {
@@ -19,26 +24,28 @@ datasource db {
 /// 校区表 - 多校区支持
 model Campus {
   id          String   @id @default(uuid())
-  code        String   @unique @db.VarChar(32)  // 校区编码
-  name        String   @db.VarChar(100)
-  address     String?  @db.VarChar(255)
-  phone       String?  @db.VarChar(20)
-  status      Int      @default(1)  // 1-正常 0-停用
+  code        String   @unique @db.VarChar(32)   // 校区编码
+  name        String   @db.VarChar(100)          // 校区名称
+  address     String?  @db.VarChar(255)          // 地址
+  phone       String?  @db.VarChar(20)           // 联系电话
+  manager     String?  @db.VarChar(50)           // 负责人
+  status      Int      @default(1)               // 1-正常 0-停用
   
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   createdBy   String?  @db.VarChar(36)
   
   // 关联
-  users       User[]
-  teachers    Teacher[]
-  students    Student[]
-  contracts   Contract[]
-  coursePackages CoursePackage[]
-  lessonRecords  LessonRecord[]
-  refunds     Refund[]
-  cashFlows   CashFlow[]
-  dailyReports DailyReport[]
+  users           User[]
+  teachers        Teacher[]
+  students        Student[]
+  contracts       Contract[]
+  coursePackages  CoursePackage[]
+  lessons         Lesson[]
+  payments        Payment[]
+  refunds         Refund[]
+  cashFlowSnapshots CashFlowSnapshot[]
+  dailyReports    DailyReport[]
   
   @@map("t_campus")
 }
@@ -51,7 +58,8 @@ model User {
   realName    String   @db.VarChar(50)
   phone       String?  @db.VarChar(20)
   email       String?  @db.VarChar(100)
-  status      Int      @default(1)  // 1-正常 0-停用
+  avatar      String?  @db.VarChar(255)
+  status      Int      @default(1)               // 1-正常 0-停用
   
   campusId    String?  @db.VarChar(36)
   campus      Campus?  @relation(fields: [campusId], references: [id])
@@ -63,14 +71,15 @@ model User {
   // RBAC关联
   userRoles   UserRole[]
   
-  // 审计关联 - 记录谁做的操作
-  createdContracts    Contract[]       @relation("ContractCreator")
-  createdLessonRecords LessonRecord[]  @relation("LessonRecordCreator")
-  revokedLessonRecords LessonRecord[]  @relation("LessonRecordRevoker")
-  createdRefunds      Refund[]         @relation("RefundCreator")
-  approvedRefunds     Refund[]         @relation("RefundApprover")
-  createdCashFlows    CashFlow[]       @relation("CashFlowCreator")
-  settledDailyReports DailyReport[]    @relation("DailyReportSettler")
+  // 审计关联 - 记录操作人
+  createdContracts     Contract[]        @relation("ContractCreator")
+  createdLessons       Lesson[]          @relation("LessonCreator")
+  revokedLessons       Lesson[]          @relation("LessonRevoker")
+  createdPayments      Payment[]         @relation("PaymentCreator")
+  createdRefunds       Refund[]          @relation("RefundCreator")
+  approvedRefunds      Refund[]          @relation("RefundApprover")
+  settledDailyReports  DailyReport[]     @relation("DailyReportSettler")
+  createdSnapshots     CashFlowSnapshot[] @relation("SnapshotCreator")
   
   @@map("t_user")
 }
@@ -78,7 +87,7 @@ model User {
 /// 角色表
 model Role {
   id          String   @id @default(uuid())
-  code        String   @unique @db.VarChar(50)  // BOSS, FINANCE, CAMPUS_MANAGER
+  code        String   @unique @db.VarChar(50)   // BOSS, FINANCE, CAMPUS_MANAGER, TEACHER
   name        String   @db.VarChar(50)
   description String?  @db.VarChar(255)
   
@@ -96,7 +105,7 @@ model Permission {
   id          String   @id @default(uuid())
   code        String   @unique @db.VarChar(100)  // contract:create, refund:approve
   name        String   @db.VarChar(100)
-  module      String   @db.VarChar(50)  // 模块分组
+  module      String   @db.VarChar(50)           // 模块分组
   
   createdAt   DateTime @default(now())
   
@@ -142,21 +151,22 @@ model RolePermission {
 /// 教师表
 model Teacher {
   id          String   @id @default(uuid())
-  code        String   @unique @db.VarChar(32)  // 工号
+  code        String   @unique @db.VarChar(32)   // 工号
   name        String   @db.VarChar(50)
   phone       String?  @db.VarChar(20)
-  status      Int      @default(1)  // 1-在职 0-离职
+  avatar      String?  @db.VarChar(255)
+  status      Int      @default(1)               // 1-在职 0-离职
   
   campusId    String   @db.VarChar(36)
   campus      Campus   @relation(fields: [campusId], references: [id])
   
   // 薪酬相关(课时费)
-  hourlyRate  Decimal  @db.Decimal(10, 2)  // 课时单价
+  hourlyRate  Decimal  @db.Decimal(10, 2)        // 课时单价
   
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
-  lessonRecords LessonRecord[]
+  lessons     Lesson[]
   
   @@map("t_teacher")
 }
@@ -164,12 +174,16 @@ model Teacher {
 /// 学员表
 model Student {
   id          String   @id @default(uuid())
-  code        String   @unique @db.VarChar(32)  // 学号
-  name        String   @db.VarChar(50)
-  phone       String?  @db.VarChar(20)
-  parentName  String?  @db.VarChar(50)
-  parentPhone String   @db.VarChar(20)
-  status      Int      @default(1)  // 1-在读 2-结业 3-退学
+  code        String   @unique @db.VarChar(32)   // 学号
+  name        String   @db.VarChar(50)           // 学员姓名
+  gender      Int?     @default(0)               // 0-未知 1-男 2-女
+  birthday    DateTime? @db.Date                 // 生日
+  phone       String?  @db.VarChar(20)           // 联系电话
+  parentName  String?  @db.VarChar(50)           // 家长姓名
+  parentPhone String   @db.VarChar(20)           // 家长电话（必填）
+  address     String?  @db.VarChar(255)          // 地址
+  remark      String?  @db.VarChar(500)          // 备注
+  status      Int      @default(1)               // 1-在读 2-结业 3-退学
   
   campusId    String   @db.VarChar(36)
   campus      Campus   @relation(fields: [campusId], references: [id])
@@ -178,30 +192,34 @@ model Student {
   updatedAt   DateTime @updatedAt
   
   contracts   Contract[]
-  lessonRecords LessonRecord[]
+  lessons     Lesson[]
   
+  @@index([campusId])
+  @@index([status])
   @@map("t_student")
 }
 
 /// 课包/课程产品表
 model CoursePackage {
   id              String   @id @default(uuid())
-  code            String   @unique @db.VarChar(32)
-  name            String   @db.VarChar(100)
-  category        String   @db.VarChar(50)  // 分类：美术、音乐、编程等
+  code            String   @unique @db.VarChar(32)  // 课包编码
+  name            String   @db.VarChar(100)         // 课包名称
+  category        String   @db.VarChar(50)          // 分类：美术、音乐、编程等
+  description     String?  @db.VarChar(500)         // 描述
   
   // 课包定价
-  standardPrice   Decimal  @db.Decimal(10, 2)  // 标准单价(每课时)
-  totalLessons    Int                          // 总课时数
-  totalAmount     Decimal  @db.Decimal(10, 2)  // 课包总价
+  unitPrice       Decimal  @db.Decimal(10, 2)       // 课时单价
+  totalLessons    Int                               // 总课时数
+  totalAmount     Decimal  @db.Decimal(10, 2)       // 课包总价 = 单价 × 课时数
   
   // 有效期
-  validDays       Int      @default(365)       // 有效天数
+  validDays       Int      @default(365)            // 有效天数
   
-  campusId        String?  @db.VarChar(36)     // null表示总部课包，全校区可用
+  // 适用校区（null表示总部课包，全校区可用）
+  campusId        String?  @db.VarChar(36)
   campus          Campus?  @relation(fields: [campusId], references: [id])
   
-  status          Int      @default(1)  // 1-在售 0-停售
+  status          Int      @default(1)              // 1-在售 0-停售
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -212,16 +230,16 @@ model CoursePackage {
 }
 
 // ============================================
-// 三、核心业务模块 - 预收/消课/退费
+// 三、核心业务模块 - 合同/收款/消课/退费
 // ============================================
 
-/// 合同表 - 预收款核心表
-/// 【重要】一份合同 = 一笔预收款 = 一个课包购买记录
+/// 合同表 - 学员购买课包的合同记录
+/// 【重要】一份合同 = 一次购买 = 产生预收款
 model Contract {
   id              String   @id @default(uuid())
   contractNo      String   @unique @db.VarChar(32)  // 合同编号 HT20241224001
   
-  // 关联
+  // ====== 关联 ======
   studentId       String   @db.VarChar(36)
   student         Student  @relation(fields: [studentId], references: [id])
   
@@ -231,28 +249,34 @@ model Contract {
   packageId       String   @db.VarChar(36)
   package         CoursePackage @relation(fields: [packageId], references: [id])
   
-  // ====== 金额字段（核心，不可修改，只能追加记录）======
-  totalAmount     Decimal  @db.Decimal(10, 2)  // 合同总金额
-  paidAmount      Decimal  @db.Decimal(10, 2)  // 已收金额
+  // ====== 金额字段（核心，不可修改）======
+  originalAmount  Decimal  @db.Decimal(10, 2)       // 原价（课包总价）
   discountAmount  Decimal  @default(0) @db.Decimal(10, 2)  // 优惠金额
+  contractAmount  Decimal  @db.Decimal(10, 2)       // 合同金额 = 原价 - 优惠
+  paidAmount      Decimal  @default(0) @db.Decimal(10, 2)  // 已收金额（可分期）
   
   // ====== 课时字段 ======
-  totalLessons    Int                          // 购买课时数
-  usedLessons     Int      @default(0)         // 已消课时数
-  remainLessons   Int                          // 剩余课时数(冗余，便于查询)
+  totalLessons    Int                               // 购买课时数
+  usedLessons     Int      @default(0)              // 已消课时数
+  remainLessons   Int                               // 剩余课时数（冗余，便于查询）
+  
+  // ====== 单价（用于计算未消课金额）======
+  unitPrice       Decimal  @db.Decimal(10, 2)       // 课时单价 = 合同金额 / 总课时
+  
+  // ====== 未消课金额（预收款余额）======
+  /// 未消课金额 = 剩余课时 × 课时单价
+  /// 这是负债，表示还欠学员多少课时的价值
+  unearned        Decimal  @db.Decimal(10, 2)       // 未消课金额（预收款余额）
   
   // ====== 有效期 ======
-  startDate       DateTime @db.Date
-  endDate         DateTime @db.Date
+  startDate       DateTime @db.Date                 // 生效日期
+  endDate         DateTime @db.Date                 // 到期日期
   
   // ====== 状态 ======
-  status          Int      @default(1)  // 1-正常 2-已完结 3-已退费 4-已过期
-  
-  // ====== 支付信息 ======
-  payMethod       String   @db.VarChar(20)  // CASH/WECHAT/ALIPAY/BANK/POS
-  payTime         DateTime?
+  status          Int      @default(1)              // 1-正常 2-已完结 3-已退费 4-已过期
   
   // ====== 审计字段 ======
+  signedAt        DateTime?                         // 签约时间
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   createdById     String   @db.VarChar(36)
@@ -260,11 +284,12 @@ model Contract {
   
   // 原始数据快照(JSON)，防止关联数据变更后丢失历史
   snapshotData    Json?
+  remark          String?  @db.VarChar(500)
   
   // 关联
-  lessonRecords   LessonRecord[]
+  payments        Payment[]
+  lessons         Lesson[]
   refunds         Refund[]
-  cashFlows       CashFlow[]
   
   @@index([studentId])
   @@index([campusId])
@@ -273,12 +298,57 @@ model Contract {
   @@map("t_contract")
 }
 
-/// 消课记录表 - 每一次上课扣课时（收入确认）
-model LessonRecord {
+/// 收款/付款表 - 记录所有收款
+/// 【核心】预收款的资金来源
+model Payment {
   id              String   @id @default(uuid())
-  recordNo        String   @unique @db.VarChar(32)  // 消课单号
+  paymentNo       String   @unique @db.VarChar(32)  // 收款单号 PM20241224001
   
-  // 关联
+  // ====== 关联 ======
+  contractId      String   @db.VarChar(36)
+  contract        Contract @relation(fields: [contractId], references: [id])
+  
+  campusId        String   @db.VarChar(36)
+  campus          Campus   @relation(fields: [campusId], references: [id])
+  
+  // ====== 金额 ======
+  amount          Decimal  @db.Decimal(10, 2)       // 收款金额
+  
+  // ====== 支付信息 ======
+  payMethod       String   @db.VarChar(20)          // CASH/WECHAT/ALIPAY/BANK/POS
+  payChannel      String?  @db.VarChar(50)          // 支付渠道详情
+  transactionNo   String?  @db.VarChar(100)         // 第三方交易号
+  
+  // ====== 类型 ======
+  paymentType     String   @db.VarChar(20)          // SIGN-签约首付 INSTALLMENT-分期 RENEWAL-续费
+  
+  // ====== 状态 ======
+  status          Int      @default(1)              // 1-已确认 2-已撤销
+  
+  // ====== 时间 ======
+  paidAt          DateTime                          // 实际收款时间
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdById     String   @db.VarChar(36)
+  createdBy       User     @relation("PaymentCreator", fields: [createdById], references: [id])
+  
+  remark          String?  @db.VarChar(255)
+  snapshotData    Json?
+  
+  @@index([contractId])
+  @@index([campusId])
+  @@index([paidAt])
+  @@index([payMethod])
+  @@map("t_payment")
+}
+
+/// 上课/消课记录表 - 每一次上课扣课时
+/// 【核心】消课 = 确认收入 = 减少预收款余额
+model Lesson {
+  id              String   @id @default(uuid())
+  lessonNo        String   @unique @db.VarChar(32)  // 消课单号 LS20241224001
+  
+  // ====== 关联 ======
   contractId      String   @db.VarChar(36)
   contract        Contract @relation(fields: [contractId], references: [id])
   
@@ -292,29 +362,33 @@ model LessonRecord {
   teacher         Teacher  @relation(fields: [teacherId], references: [id])
   
   // ====== 消课信息 ======
-  attendDate      DateTime @db.Date                 // 上课日期
-  consumedCount   Int                               // 消耗课时数
-  consumedAmount  Decimal  @db.Decimal(10, 2)       // 消耗金额(课时*单价) = 确认收入
+  lessonDate      DateTime @db.Date                 // 上课日期
+  lessonTime      String?  @db.VarChar(20)          // 上课时间段 如 "14:00-15:30"
+  duration        Int?                              // 时长（分钟）
   
-  // 课时单价(记录时的价格，避免后续价格变动影响历史)
-  unitPrice       Decimal  @db.Decimal(10, 2)
+  // ====== 消课数量与金额 ======
+  lessonCount     Int                               // 消耗课时数
+  unitPrice       Decimal  @db.Decimal(10, 2)       // 课时单价（记录时的价格）
+  lessonAmount    Decimal  @db.Decimal(10, 2)       // 消课金额 = 课时数 × 单价 = 确认收入
   
   // ====== 消课前后状态快照 ======
   beforeRemain    Int                               // 消课前剩余课时
   afterRemain     Int                               // 消课后剩余课时
+  beforeUnearned  Decimal  @db.Decimal(10, 2)       // 消课前未消课金额
+  afterUnearned   Decimal  @db.Decimal(10, 2)       // 消课后未消课金额
   
   // ====== 状态 ======
-  status          Int      @default(1)  // 1-正常 2-已撤销
+  status          Int      @default(1)              // 1-正常 2-已撤销
   revokeReason    String?  @db.VarChar(255)
   revokedAt       DateTime?
   revokedById     String?  @db.VarChar(36)
-  revokedBy       User?    @relation("LessonRecordRevoker", fields: [revokedById], references: [id])
+  revokedBy       User?    @relation("LessonRevoker", fields: [revokedById], references: [id])
   
   // ====== 审计字段 ======
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   createdById     String   @db.VarChar(36)
-  createdBy       User     @relation("LessonRecordCreator", fields: [createdById], references: [id])
+  createdBy       User     @relation("LessonCreator", fields: [createdById], references: [id])
   
   remark          String?  @db.VarChar(255)
   snapshotData    Json?
@@ -323,16 +397,18 @@ model LessonRecord {
   @@index([studentId])
   @@index([campusId])
   @@index([teacherId])
-  @@index([attendDate])
-  @@map("t_lesson_record")
+  @@index([lessonDate])
+  @@index([status])
+  @@map("t_lesson")
 }
 
 /// 退费申请表
+/// 【核心】退费 = 返还预收款 = 减少负债
 model Refund {
   id              String   @id @default(uuid())
-  refundNo        String   @unique @db.VarChar(32)  // 退费单号 TF20241224001
+  refundNo        String   @unique @db.VarChar(32)  // 退费单号 RF20241224001
   
-  // 关联
+  // ====== 关联 ======
   contractId      String   @db.VarChar(36)
   contract        Contract @relation(fields: [contractId], references: [id])
   
@@ -340,27 +416,28 @@ model Refund {
   campus          Campus   @relation(fields: [campusId], references: [id])
   
   // ====== 退费计算 ======
-  remainLessons   Int                              // 申请时剩余课时
-  unitPrice       Decimal  @db.Decimal(10, 2)      // 课时单价
-  refundableAmount Decimal @db.Decimal(10, 2)      // 可退金额(剩余课时*单价)
-  deductAmount    Decimal  @default(0) @db.Decimal(10, 2)  // 扣除金额(违约金等)
-  actualAmount    Decimal  @db.Decimal(10, 2)      // 实退金额
+  remainLessons   Int                               // 申请时剩余课时
+  unitPrice       Decimal  @db.Decimal(10, 2)       // 课时单价
+  refundableAmount Decimal @db.Decimal(10, 2)       // 可退金额 = 剩余课时 × 单价
+  deductAmount    Decimal  @default(0) @db.Decimal(10, 2)  // 扣除金额（违约金等）
+  actualAmount    Decimal  @db.Decimal(10, 2)       // 实退金额 = 可退 - 扣除
   
   // ====== 退费原因 ======
   reason          String   @db.VarChar(500)
-  refundType      String   @db.VarChar(20)  // NORMAL-正常退费 TRANSFER-转校区 TERMINATE-终止合作
+  refundType      String   @db.VarChar(20)          // NORMAL-正常退费 TRANSFER-转校退 TERMINATE-终止
   
   // ====== 审批流程 ======
-  status          Int      @default(0)  // 0-待审批 1-已通过 2-已驳回 3-已完成(已打款)
+  status          Int      @default(0)              // 0-待审批 1-已通过 2-已驳回 3-已完成(已打款)
   approvedAt      DateTime?
   approvedById    String?  @db.VarChar(36)
   approvedBy      User?    @relation("RefundApprover", fields: [approvedById], references: [id])
   approveRemark   String?  @db.VarChar(255)
   
   // ====== 打款信息 ======
-  refundMethod    String?  @db.VarChar(20)  // 退款方式
-  refundAccount   String?  @db.VarChar(100) // 退款账户
-  refundTime      DateTime?
+  refundMethod    String?  @db.VarChar(20)          // 退款方式
+  refundAccount   String?  @db.VarChar(100)         // 退款账户
+  refundedAt      DateTime?                         // 实际退款时间
+  transactionNo   String?  @db.VarChar(100)         // 退款交易号
   
   // ====== 审计字段 ======
   createdAt       DateTime @default(now())
@@ -368,10 +445,7 @@ model Refund {
   createdById     String   @db.VarChar(36)
   createdBy       User     @relation("RefundCreator", fields: [createdById], references: [id])
   
-  // 申请时的合同状态快照
-  snapshotData    Json?
-  
-  cashFlows       CashFlow[]
+  snapshotData    Json?                             // 申请时的合同状态快照
   
   @@index([contractId])
   @@index([campusId])
@@ -381,80 +455,88 @@ model Refund {
 }
 
 // ============================================
-// 四、现金流模块（核心财务引擎）
+// 四、现金流快照模块
 // ============================================
 
-/// 现金流水表 - 所有资金变动记录
-/// 【核心原则】只增不改，每一笔都有迹可循
-model CashFlow {
+/// 现金流快照表 - 定时记录财务状态
+/// 用于生成报表、趋势分析、数据对账
+model CashFlowSnapshot {
   id              String   @id @default(uuid())
-  flowNo          String   @unique @db.VarChar(32)  // 流水号
   
-  // ====== 方向 ======
-  direction       Int                        // 1-流入 -1-流出
+  // ====== 快照时间 ======
+  snapshotDate    DateTime @db.Date                 // 快照日期
+  snapshotType    String   @db.VarChar(20)          // DAILY-日快照 MONTHLY-月快照 YEARLY-年快照
   
-  // ====== 关联业务 ======
-  bizType         String   @db.VarChar(20)  // CONTRACT-合同收款 REFUND-退费 LESSON-消课确收
-  bizId           String   @db.VarChar(36)  // 关联的业务ID
-  bizNo           String   @db.VarChar(32)  // 关联的业务单号
+  // ====== 所属校区（null表示全公司汇总）======
+  campusId        String?  @db.VarChar(36)
+  campus          Campus?  @relation(fields: [campusId], references: [id])
   
-  contractId      String?  @db.VarChar(36)
-  contract        Contract? @relation(fields: [contractId], references: [id])
+  // ====== 预收款相关（负债端）======
+  totalPrepaid    Decimal  @db.Decimal(14, 2)       // 累计预收款总额
+  totalUnearned   Decimal  @db.Decimal(14, 2)       // 未消课金额（预收款余额）
+  totalEarned     Decimal  @db.Decimal(14, 2)       // 已确认收入（已消课金额）
   
-  refundId        String?  @db.VarChar(36)
-  refund          Refund?  @relation(fields: [refundId], references: [id])
+  // ====== 当期变动 ======
+  periodIncome    Decimal  @db.Decimal(12, 2)       // 当期收款（新增预收）
+  periodEarned    Decimal  @db.Decimal(12, 2)       // 当期确认收入（消课）
+  periodRefund    Decimal  @db.Decimal(12, 2)       // 当期退费
   
-  // ====== 金额信息 ======
-  amount          Decimal  @db.Decimal(10, 2)
+  // ====== 合同相关 ======
+  activeContracts Int                               // 有效合同数
+  totalLessonsRemain Int                            // 总剩余课时
   
-  // ====== 支付信息 ======
-  payMethod       String   @db.VarChar(20)
+  // ====== 学员相关 ======
+  activeStudents  Int                               // 在读学员数
   
-  // ====== 所属校区 ======
-  campusId        String   @db.VarChar(36)
-  campus          Campus   @relation(fields: [campusId], references: [id])
+  // ====== 教师相关 ======
+  activeTeachers  Int                               // 在职教师数
   
-  // ====== 备注 ======
-  remark          String?  @db.VarChar(255)
-  
-  // ====== 数据快照 ======
-  snapshotData    Json?
+  // ====== 详细数据（JSON）======
+  /// 存储更多维度的统计数据
+  detailData      Json?
   
   // ====== 审计字段 ======
   createdAt       DateTime @default(now())
-  createdById     String   @db.VarChar(36)
-  createdBy       User     @relation("CashFlowCreator", fields: [createdById], references: [id])
+  updatedAt       DateTime @updatedAt
+  createdById     String?  @db.VarChar(36)
+  createdBy       User?    @relation("SnapshotCreator", fields: [createdById], references: [id])
   
-  @@index([bizType, bizId])
+  @@unique([snapshotDate, snapshotType, campusId])
+  @@index([snapshotDate])
+  @@index([snapshotType])
   @@index([campusId])
-  @@index([direction])
-  @@index([createdAt])
-  @@map("t_cash_flow")
+  @@map("t_cashflow_snapshot")
 }
 
-/// 财务日结报表
+/// 财务日报表 - 每日结算
 model DailyReport {
   id              String   @id @default(uuid())
   
-  reportDate      DateTime @db.Date
+  reportDate      DateTime @db.Date                 // 报表日期
   
   campusId        String   @db.VarChar(36)
   campus          Campus   @relation(fields: [campusId], references: [id])
   
   // ====== 收入汇总 ======
   totalIncome     Decimal  @default(0) @db.Decimal(12, 2)  // 当日收款
-  totalRefund     Decimal  @default(0) @db.Decimal(12, 2)  // 当日退款
+  totalRefund     Decimal  @default(0) @db.Decimal(12, 2)  // 当日退费
   netIncome       Decimal  @default(0) @db.Decimal(12, 2)  // 净收入
   
   // ====== 确认收入 ======
-  confirmedRevenue Decimal @default(0) @db.Decimal(12, 2) // 当日消课确认收入
+  confirmedRevenue Decimal @default(0) @db.Decimal(12, 2)  // 当日消课确认收入
   
   // ====== 笔数 ======
-  contractCount   Int      @default(0)  // 新签合同数
-  refundCount     Int      @default(0)  // 退费笔数
-  lessonCount     Int      @default(0)  // 消课次数
+  contractCount   Int      @default(0)              // 新签合同数
+  paymentCount    Int      @default(0)              // 收款笔数
+  refundCount     Int      @default(0)              // 退费笔数
+  lessonCount     Int      @default(0)              // 消课次数
+  lessonHours     Int      @default(0)              // 消课课时数
+  
+  // ====== 期末余额 ======
+  unearnedBalance Decimal  @default(0) @db.Decimal(12, 2)  // 期末未消课金额
   
   // ====== 日结状态 ======
+  isSettled       Boolean  @default(false)          // 是否已日结
   settledAt       DateTime?
   settledById     String?  @db.VarChar(36)
   settledBy       User?    @relation("DailyReportSettler", fields: [settledById], references: [id])
@@ -479,7 +561,7 @@ model SystemConfig {
   id          String   @id @default(uuid())
   configKey   String   @unique @db.VarChar(100)
   configValue String   @db.Text
-  configType  String   @db.VarChar(20)  // STRING/NUMBER/JSON/BOOLEAN
+  configType  String   @db.VarChar(20)             // STRING/NUMBER/JSON/BOOLEAN
   remark      String?  @db.VarChar(255)
   
   createdAt   DateTime @default(now())
@@ -495,10 +577,11 @@ model OperationLog {
   userId      String   @db.VarChar(36)
   userName    String   @db.VarChar(50)
   
-  module      String   @db.VarChar(50)   // 模块
-  action      String   @db.VarChar(50)   // 操作类型
-  bizType     String?  @db.VarChar(50)   // 业务类型
-  bizId       String?  @db.VarChar(36)   // 业务ID
+  module      String   @db.VarChar(50)             // 模块
+  action      String   @db.VarChar(50)             // 操作类型
+  bizType     String?  @db.VarChar(50)             // 业务类型
+  bizId       String?  @db.VarChar(36)             // 业务ID
+  bizNo       String?  @db.VarChar(50)             // 业务单号
   
   // 操作前后数据(JSON)
   beforeData  Json?

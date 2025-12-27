@@ -1,8 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResponseDto } from '../../common/dto';
 import { NumberGenerator, DecimalUtil } from '../../common/utils';
-import { CashflowService } from '../cashflow/cashflow.service';
 
 /**
  * 退费服务
@@ -12,22 +11,13 @@ import { CashflowService } from '../cashflow/cashflow.service';
  * 2. 退费申请
  * 3. 退费审批
  * 4. 退费打款确认
- * 5. 生成资金流出记录
  */
 @Injectable()
 export class RefundService {
-  constructor(
-    private prisma: PrismaService,
-    @Inject(forwardRef(() => CashflowService))
-    private cashflowService: CashflowService,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   /**
    * 退费预览
-   * 
-   * 计算公式：
-   * 可退金额 = 剩余课时 × 课单价
-   * 课单价 = 实付金额 / 总课时
    */
   async preview(contractId: string) {
     const contract = await this.prisma.contract.findUnique({
@@ -37,8 +27,7 @@ export class RefundService {
     if (!contract) throw new NotFoundException('合同不存在');
     if (contract.status !== 1) throw new BadRequestException('该合同不是正常状态，无法退费');
 
-    const unitPrice = DecimalUtil.divide(contract.paidAmount.toString(), contract.totalLessons.toString());
-    const refundableAmount = DecimalUtil.multiply(unitPrice, contract.remainLessons.toString());
+    const refundableAmount = contract.unearned;
 
     return {
       contract: {
@@ -53,8 +42,8 @@ export class RefundService {
         usedLessons: contract.usedLessons,
         remainLessons: contract.remainLessons,
         paidAmount: Number(contract.paidAmount),
-        unitPrice: DecimalUtil.toNumber(unitPrice),
-        refundableAmount: DecimalUtil.toNumber(refundableAmount),
+        unitPrice: Number(contract.unitPrice),
+        refundableAmount: Number(refundableAmount),
       },
     };
   }
@@ -77,10 +66,9 @@ export class RefundService {
     if (existingRefund) throw new BadRequestException('该合同已有进行中的退费申请');
 
     // 计算金额
-    const unitPrice = DecimalUtil.divide(contract.paidAmount.toString(), contract.totalLessons.toString());
-    const refundableAmount = DecimalUtil.multiply(unitPrice, contract.remainLessons.toString());
+    const refundableAmount = contract.unearned;
     const deductAmount = createDto.deductAmount || 0;
-    const actualAmount = DecimalUtil.subtract(refundableAmount, deductAmount.toString());
+    const actualAmount = DecimalUtil.subtract(refundableAmount.toString(), deductAmount.toString());
 
     if (DecimalUtil.lt(actualAmount, '0')) {
       throw new BadRequestException('扣除金额不能大于可退金额');
@@ -94,13 +82,13 @@ export class RefundService {
         contractId: createDto.contractId,
         campusId: contract.campusId,
         remainLessons: contract.remainLessons,
-        unitPrice: DecimalUtil.toNumber(unitPrice),
-        refundableAmount: DecimalUtil.toNumber(refundableAmount),
+        unitPrice: DecimalUtil.toNumber(contract.unitPrice.toString()),
+        refundableAmount: DecimalUtil.toNumber(refundableAmount.toString()),
         deductAmount: DecimalUtil.toNumber(deductAmount.toString()),
         actualAmount: DecimalUtil.toNumber(actualAmount),
         reason: createDto.reason,
         refundType: createDto.refundType || 'NORMAL',
-        status: 0, // 待审批
+        status: 0,
         createdById: currentUser.userId,
         snapshotData: {
           contract: {
@@ -109,6 +97,7 @@ export class RefundService {
             paidAmount: contract.paidAmount,
             totalLessons: contract.totalLessons,
             remainLessons: contract.remainLessons,
+            unearned: contract.unearned,
           },
           student: {
             id: contract.student.id,
@@ -212,7 +201,7 @@ export class RefundService {
     const refund = await this.findOne(id);
     if (refund.status !== 0) throw new BadRequestException('该退费申请不是待审批状态');
 
-    const newStatus = approveDto.approved ? 1 : 2; // 1=已通过 2=已拒绝
+    const newStatus = approveDto.approved ? 1 : 2;
 
     return this.prisma.refund.update({
       where: { id },
@@ -221,7 +210,6 @@ export class RefundService {
         approvedAt: new Date(),
         approvedById: currentUser.userId,
         approveRemark: approveDto.remark,
-        // 允许调整实际退款金额
         actualAmount: approveDto.actualAmount
           ? DecimalUtil.toNumber(approveDto.actualAmount.toString())
           : undefined,
@@ -231,11 +219,6 @@ export class RefundService {
 
   /**
    * 完成退费打款
-   * 
-   * 业务流程：
-   * 1. 标记退费完成
-   * 2. 更新合同状态为已退费
-   * 3. 生成资金流出记录
    */
   async complete(id: string, completeDto: any, currentUser: any) {
     const refund = await this.findOne(id);
@@ -246,32 +229,22 @@ export class RefundService {
       await tx.refund.update({
         where: { id },
         data: {
-          status: 3, // 已完成
+          status: 3,
           refundMethod: completeDto.refundMethod,
           refundAccount: completeDto.refundAccount,
-          refundTime: new Date(),
+          refundedAt: new Date(),
+          transactionNo: completeDto.transactionNo,
         },
       });
 
       // 更新合同状态
       await tx.contract.update({
         where: { id: refund.contractId },
-        data: { status: 3 }, // 已退费
-      });
-
-      // 生成资金流出记录
-      await this.cashflowService.recordOutflow(tx, {
-        bizType: 'REFUND',
-        bizId: refund.id,
-        bizNo: refund.refundNo,
-        contractId: refund.contractId,
-        refundId: refund.id,
-        amount: Number(refund.actualAmount),
-        payMethod: completeDto.refundMethod,
-        campusId: refund.campusId,
-        createdById: currentUser.userId,
-        remark: `退费: ${refund.refundNo}`,
-        snapshotData: refund.snapshotData as Record<string, any> | undefined,
+        data: {
+          status: 3,
+          unearned: 0,
+          remainLessons: 0,
+        },
       });
     });
 
@@ -282,11 +255,11 @@ export class RefundService {
    * 退费统计
    */
   async getStatistics(campusId?: string, startDate?: string, endDate?: string) {
-    const where: any = { status: 3 }; // 只统计已完成
+    const where: any = { status: 3 };
 
     if (campusId) where.campusId = campusId;
     if (startDate && endDate) {
-      where.refundTime = { gte: new Date(startDate), lte: new Date(endDate) };
+      where.refundedAt = { gte: new Date(startDate), lte: new Date(endDate) };
     }
 
     const stats = await this.prisma.refund.aggregate({

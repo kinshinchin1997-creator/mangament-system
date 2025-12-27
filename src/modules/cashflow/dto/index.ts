@@ -18,6 +18,11 @@ export class QueryCashflowDto extends PaginationDto {
   @IsString()
   bizType?: string;
 
+  @ApiPropertyOptional({ description: '流向类型: inflow=收款, outflow=退费', enum: ['inflow', 'outflow'] })
+  @IsOptional()
+  @IsString()
+  flowType?: 'inflow' | 'outflow';
+
   @ApiPropertyOptional({ description: '开始日期' })
   @IsOptional()
   @IsDateString()

@@ -23,13 +23,6 @@ export class LessonService {
 
   /**
    * 创建消课记录
-   * 
-   * 业务流程：
-   * 1. 校验合同状态、剩余课时
-   * 2. 校验教师状态
-   * 3. 计算消课金额（课单价 × 消课数）
-   * 4. 创建消课记录
-   * 5. 扣减合同课时
    */
   async create(createDto: any, currentUser: any) {
     // 1. 校验合同
@@ -49,54 +42,60 @@ export class LessonService {
     if (teacher.status !== 1) throw new BadRequestException('该教师已离职');
 
     // 3. 计算金额
-    const unitPrice = DecimalUtil.divide(contract.paidAmount.toString(), contract.totalLessons.toString());
-    const consumedAmount = DecimalUtil.multiply(unitPrice, createDto.lessonCount.toString());
-    const recordNo = NumberGenerator.generateLessonRecordNo();
+    const unitPrice = contract.unitPrice;
+    const lessonAmount = DecimalUtil.multiply(unitPrice.toString(), createDto.lessonCount.toString());
+    const lessonNo = NumberGenerator.generateLessonRecordNo();
+
+    // 计算新的未消课金额
+    const newRemainLessons = contract.remainLessons - createDto.lessonCount;
+    const newUnearned = DecimalUtil.multiply(unitPrice.toString(), newRemainLessons.toString());
 
     // 4. 事务处理
-    const lessonRecord = await this.prisma.$transaction(async (tx) => {
+    const lesson = await this.prisma.$transaction(async (tx) => {
       // 创建消课记录
-      const record = await tx.lessonRecord.create({
+      const record = await tx.lesson.create({
         data: {
-          recordNo,
+          lessonNo,
           contractId: createDto.contractId,
           studentId: contract.studentId,
           campusId: contract.campusId,
           teacherId: createDto.teacherId,
-          attendDate: new Date(createDto.attendDate || new Date()),
-          consumedCount: createDto.lessonCount,
-          consumedAmount: DecimalUtil.toNumber(consumedAmount),
-          unitPrice: DecimalUtil.toNumber(unitPrice),
+          lessonDate: new Date(createDto.lessonDate || new Date()),
+          lessonTime: createDto.lessonTime,
+          duration: createDto.duration,
+          lessonCount: createDto.lessonCount,
+          unitPrice: DecimalUtil.toNumber(unitPrice.toString()),
+          lessonAmount: DecimalUtil.toNumber(lessonAmount),
           beforeRemain: contract.remainLessons,
-          afterRemain: contract.remainLessons - createDto.lessonCount,
-          status: 1, // 已完成
+          afterRemain: newRemainLessons,
+          beforeUnearned: DecimalUtil.toNumber(contract.unearned.toString()),
+          afterUnearned: DecimalUtil.toNumber(newUnearned),
+          status: 1,
           createdById: currentUser.userId,
           remark: createDto.remark,
           snapshotData: {
-            contract: {
-              id: contract.id,
-              contractNo: contract.contractNo,
-            },
-            student: {
-              id: contract.student.id,
-              name: contract.student.name,
-            },
-            teacher: {
-              id: teacher.id,
-              name: teacher.name,
-            },
-            unitPrice: DecimalUtil.toNumber(unitPrice),
+            contract: { id: contract.id, contractNo: contract.contractNo },
+            student: { id: contract.student.id, name: contract.student.name },
+            teacher: { id: teacher.id, name: teacher.name },
           },
         },
       });
 
-      // 扣减合同课时
-      await this.contractService.updateLessonsAfterConsumption(createDto.contractId, createDto.lessonCount, tx);
+      // 更新合同课时和未消课金额
+      await tx.contract.update({
+        where: { id: createDto.contractId },
+        data: {
+          usedLessons: contract.usedLessons + createDto.lessonCount,
+          remainLessons: newRemainLessons,
+          unearned: DecimalUtil.toNumber(newUnearned),
+          status: newRemainLessons === 0 ? 2 : contract.status,
+        },
+      });
 
       return record;
     });
 
-    return this.findOne(lessonRecord.id);
+    return this.findOne(lesson.id);
   }
 
   /**
@@ -111,12 +110,12 @@ export class LessonService {
     if (teacherId) where.teacherId = teacherId;
     if (campusId) where.campusId = campusId;
     if (startDate && endDate) {
-      where.attendDate = { gte: new Date(startDate), lte: new Date(endDate) };
+      where.lessonDate = { gte: new Date(startDate), lte: new Date(endDate) };
     }
     if (status !== undefined) where.status = status;
 
     const [data, total] = await Promise.all([
-      this.prisma.lessonRecord.findMany({
+      this.prisma.lesson.findMany({
         where,
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -127,9 +126,9 @@ export class LessonService {
           campus: { select: { id: true, name: true } },
           createdBy: { select: { id: true, realName: true } },
         },
-        orderBy: { attendDate: 'desc' },
+        orderBy: { lessonDate: 'desc' },
       }),
-      this.prisma.lessonRecord.count({ where }),
+      this.prisma.lesson.count({ where }),
     ]);
 
     return new PaginatedResponseDto(data, total, page, pageSize);
@@ -139,7 +138,7 @@ export class LessonService {
    * 获取消课详情
    */
   async findOne(id: string) {
-    const record = await this.prisma.lessonRecord.findUnique({
+    const record = await this.prisma.lesson.findUnique({
       where: { id },
       include: {
         student: true,
@@ -155,10 +154,6 @@ export class LessonService {
 
   /**
    * 撤销消课
-   * 
-   * 业务逻辑：
-   * 1. 标记消课记录为已撤销
-   * 2. 恢复合同课时
    */
   async revoke(id: string, reason: string, currentUser: any) {
     const record = await this.findOne(id);
@@ -166,10 +161,10 @@ export class LessonService {
 
     await this.prisma.$transaction(async (tx) => {
       // 标记撤销
-      await tx.lessonRecord.update({
+      await tx.lesson.update({
         where: { id },
         data: {
-          status: 2, // 已撤销
+          status: 2,
           revokeReason: reason,
           revokedAt: new Date(),
           revokedById: currentUser.userId,
@@ -179,12 +174,15 @@ export class LessonService {
       // 恢复合同课时
       const contract = await tx.contract.findUnique({ where: { id: record.contractId } });
       if (contract) {
+        const newRemainLessons = contract.remainLessons + record.lessonCount;
+        const newUnearned = DecimalUtil.multiply(contract.unitPrice.toString(), newRemainLessons.toString());
+        
         await tx.contract.update({
           where: { id: record.contractId },
           data: {
-            usedLessons: contract.usedLessons - record.consumedCount,
-            remainLessons: contract.remainLessons + record.consumedCount,
-            // 如果合同是已耗尽状态，恢复为正常
+            usedLessons: contract.usedLessons - record.lessonCount,
+            remainLessons: newRemainLessons,
+            unearned: DecimalUtil.toNumber(newUnearned),
             status: contract.status === 2 ? 1 : contract.status,
           },
         });
@@ -204,21 +202,21 @@ export class LessonService {
     if (campusId) where.campusId = campusId;
     if (teacherId) where.teacherId = teacherId;
     if (startDate && endDate) {
-      where.attendDate = { gte: new Date(startDate), lte: new Date(endDate) };
+      where.lessonDate = { gte: new Date(startDate), lte: new Date(endDate) };
     }
 
-    const summary = await this.prisma.lessonRecord.aggregate({
+    const summary = await this.prisma.lesson.aggregate({
       where,
       _count: true,
-      _sum: { consumedCount: true, consumedAmount: true },
+      _sum: { lessonCount: true, lessonAmount: true },
     });
 
     // 按教师统计
-    const byTeacher = await this.prisma.lessonRecord.groupBy({
+    const byTeacher = await this.prisma.lesson.groupBy({
       by: ['teacherId'],
       where,
       _count: true,
-      _sum: { consumedCount: true, consumedAmount: true },
+      _sum: { lessonCount: true, lessonAmount: true },
     });
 
     // 获取教师名称
@@ -232,15 +230,15 @@ export class LessonService {
     return {
       summary: {
         totalRecords: summary._count,
-        totalLessons: summary._sum.consumedCount || 0,
-        totalAmount: summary._sum.consumedAmount || 0,
+        totalLessons: summary._sum.lessonCount || 0,
+        totalAmount: summary._sum.lessonAmount || 0,
       },
       byTeacher: byTeacher.map((t) => ({
         teacherId: t.teacherId,
         teacherName: teacherMap.get(t.teacherId) || '未知',
         recordCount: t._count,
-        lessonCount: t._sum.consumedCount || 0,
-        amount: t._sum.consumedAmount || 0,
+        lessonCount: t._sum.lessonCount || 0,
+        amount: t._sum.lessonAmount || 0,
       })),
     };
   }

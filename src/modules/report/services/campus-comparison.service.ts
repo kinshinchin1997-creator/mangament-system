@@ -30,14 +30,14 @@ export class CampusComparisonService {
         });
 
         // 消课（确认收入）
-        const lessons = await this.prisma.lessonRecord.aggregate({
+        const lessons = await this.prisma.lesson.aggregate({
           where: {
             campusId: campus.id,
             status: 1,
-            ...(dateFilter.createdAt ? { attendDate: dateFilter.createdAt } : {}),
+            ...(dateFilter.createdAt ? { lessonDate: dateFilter.createdAt } : {}),
           },
           _count: true,
-          _sum: { consumedCount: true, consumedAmount: true },
+          _sum: { lessonCount: true, lessonAmount: true },
         });
 
         // 退费
@@ -51,33 +51,27 @@ export class CampusComparisonService {
           _sum: { actualAmount: true },
         });
 
-        // 当前预收款余额
-        const activeContracts = await this.prisma.contract.findMany({
+        // 当前预收款余额（使用 unearned 字段）
+        const prepaidBalance = await this.prisma.contract.aggregate({
           where: { campusId: campus.id, status: 1 },
-          select: { paidAmount: true, totalLessons: true, remainLessons: true },
+          _sum: { unearned: true },
         });
-
-        let prepaidBalance = 0;
-        for (const c of activeContracts) {
-          const unitPrice = c.paidAmount.toNumber() / c.totalLessons;
-          prepaidBalance += unitPrice * c.remainLessons;
-        }
 
         return {
           campusId: campus.id,
           campusName: campus.name,
           // 新签
           newContracts: contracts._count,
-          contractAmount: DecimalUtil.format((contracts._sum.paidAmount?.toNumber() || 0).toString()),
+          contractAmount: DecimalUtil.format((Number(contracts._sum.paidAmount) || 0).toString()),
           // 消课
           lessonRecords: lessons._count,
-          lessonCount: lessons._sum?.consumedCount || 0,
-          lessonAmount: DecimalUtil.format((lessons._sum?.consumedAmount?.toNumber() || 0).toString()),
+          lessonCount: lessons._sum?.lessonCount || 0,
+          lessonAmount: DecimalUtil.format((Number(lessons._sum?.lessonAmount) || 0).toString()),
           // 退费
           refundCount: refunds._count,
-          refundAmount: DecimalUtil.format((refunds._sum.actualAmount?.toNumber() || 0).toString()),
+          refundAmount: DecimalUtil.format((Number(refunds._sum.actualAmount) || 0).toString()),
           // 预收款余额
-          prepaidBalance: DecimalUtil.format(prepaidBalance.toString()),
+          prepaidBalance: DecimalUtil.format((Number(prepaidBalance._sum.unearned) || 0).toString()),
         };
       }),
     );

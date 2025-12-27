@@ -33,32 +33,31 @@ export class RevenueForecastService {
         paidAmount: true,
         totalLessons: true,
         remainLessons: true,
+        unearned: true,
         startDate: true,
         endDate: true,
       },
     });
 
-    // 计算剩余价值
+    // 计算剩余价值（使用 unearned 字段）
     let totalRemainValue = 0;
     contracts.forEach((c) => {
-      const unitPrice = Number(c.paidAmount) / c.totalLessons;
-      const remainValue = unitPrice * c.remainLessons;
-      totalRemainValue += remainValue;
+      totalRemainValue += Number(c.unearned);
     });
 
     // 获取历史月均消课速度
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-    const lessonWhere: any = { attendDate: { gte: sixMonthsAgo } };
+    const lessonWhere: any = { status: 1, lessonDate: { gte: sixMonthsAgo } };
     if (campusId) lessonWhere.campusId = campusId;
 
-    const lessonStats = await this.prisma.lessonRecord.aggregate({
+    const lessonStats = await this.prisma.lesson.aggregate({
       where: lessonWhere,
-      _sum: { consumedAmount: true },
+      _sum: { lessonAmount: true },
     });
 
-    const totalConsumed = Number(lessonStats._sum.consumedAmount || 0);
+    const totalConsumed = Number(lessonStats._sum.lessonAmount || 0);
     const monthlyConsumeRate = totalConsumed / 6;
 
     // 生成预测
@@ -119,7 +118,7 @@ export class RevenueForecastService {
     const contracts = await this.prisma.contract.findMany({
       where,
       include: {
-        student: { select: { id: true, name: true, phone: true } },
+        student: { select: { id: true, name: true, parentPhone: true } },
         campus: { select: { id: true, name: true } },
         package: { select: { id: true, name: true } },
       },
@@ -129,13 +128,12 @@ export class RevenueForecastService {
     // 计算潜在流失金额
     let totalLostValue = 0;
     const result = contracts.map((c) => {
-      const unitPrice = Number(c.paidAmount) / c.totalLessons;
-      const lostValue = unitPrice * c.remainLessons;
+      const lostValue = Number(c.unearned);
       totalLostValue += lostValue;
 
       return {
         ...c,
-        unitPrice: Math.round(unitPrice * 100) / 100,
+        unitPrice: Number(c.unitPrice),
         lostValue: Math.round(lostValue),
         daysToExpire: Math.ceil((c.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
       };
@@ -151,4 +149,3 @@ export class RevenueForecastService {
     };
   }
 }
-

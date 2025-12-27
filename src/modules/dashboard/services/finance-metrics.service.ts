@@ -15,36 +15,40 @@ export class FinanceMetricsService {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const where: any = { createdAt: { gte: today } };
-    if (campusId) where.campusId = campusId;
+    const paymentWhere: any = { status: 1, paidAt: { gte: today } };
+    const refundWhere: any = { status: 3, refundedAt: { gte: today } };
+    const lessonWhere: any = { status: 1, lessonDate: { gte: today } };
+
+    if (campusId) {
+      paymentWhere.campusId = campusId;
+      refundWhere.campusId = campusId;
+      lessonWhere.campusId = campusId;
+    }
 
     // 今日收入
-    const income = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: 1 },
+    const income = await this.prisma.payment.aggregate({
+      where: paymentWhere,
       _sum: { amount: true },
       _count: true,
     });
 
     // 今日退费
-    const refund = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: -1 },
-      _sum: { amount: true },
+    const refund = await this.prisma.refund.aggregate({
+      where: refundWhere,
+      _sum: { actualAmount: true },
       _count: true,
     });
 
     // 今日消课
-    const lessonWhere: any = { attendDate: { gte: today } };
-    if (campusId) lessonWhere.campusId = campusId;
-
-    const lessons = await this.prisma.lessonRecord.aggregate({
+    const lessons = await this.prisma.lesson.aggregate({
       where: lessonWhere,
-      _sum: { consumedAmount: true, consumedCount: true },
+      _sum: { lessonAmount: true, lessonCount: true },
     });
 
     // 按支付方式统计
-    const byPayMethod = await this.prisma.cashFlow.groupBy({
+    const byPayMethod = await this.prisma.payment.groupBy({
       by: ['payMethod'],
-      where: { ...where, direction: 1 },
+      where: paymentWhere,
       _sum: { amount: true },
     });
 
@@ -55,13 +59,13 @@ export class FinanceMetricsService {
         count: income._count,
       },
       refund: {
-        amount: Number(refund._sum.amount || 0),
+        amount: Number(refund._sum.actualAmount || 0),
         count: refund._count,
       },
-      net: Number(income._sum.amount || 0) - Number(refund._sum.amount || 0),
+      net: Number(income._sum.amount || 0) - Number(refund._sum.actualAmount || 0),
       lessons: {
-        amount: Number(lessons._sum.consumedAmount || 0),
-        count: lessons._sum.consumedCount || 0,
+        amount: Number(lessons._sum.lessonAmount || 0),
+        count: lessons._sum.lessonCount || 0,
       },
       byPayMethod: byPayMethod.map((p) => ({
         method: p.payMethod,
@@ -74,32 +78,44 @@ export class FinanceMetricsService {
    * 现金流指标
    */
   async getCashflowMetrics(startDate: string, endDate: string, campusId?: string) {
-    const where: any = {
-      createdAt: {
+    const paymentWhere: any = {
+      status: 1,
+      paidAt: {
         gte: new Date(startDate),
         lte: new Date(endDate),
       },
     };
-    if (campusId) where.campusId = campusId;
+    const refundWhere: any = {
+      status: 3,
+      refundedAt: {
+        gte: new Date(startDate),
+        lte: new Date(endDate),
+      },
+    };
 
-    // 总流入
-    const inflow = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: 1 },
+    if (campusId) {
+      paymentWhere.campusId = campusId;
+      refundWhere.campusId = campusId;
+    }
+
+    // 总流入（收款）
+    const inflow = await this.prisma.payment.aggregate({
+      where: paymentWhere,
       _sum: { amount: true },
       _count: true,
     });
 
-    // 总流出
-    const outflow = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: -1 },
-      _sum: { amount: true },
+    // 总流出（退费）
+    const outflow = await this.prisma.refund.aggregate({
+      where: refundWhere,
+      _sum: { actualAmount: true },
       _count: true,
     });
 
-    // 按业务类型统计
-    const byBizType = await this.prisma.cashFlow.groupBy({
-      by: ['bizType', 'direction'],
-      where,
+    // 按收款类型统计
+    const byPaymentType = await this.prisma.payment.groupBy({
+      by: ['paymentType'],
+      where: paymentWhere,
       _sum: { amount: true },
     });
 
@@ -110,13 +126,13 @@ export class FinanceMetricsService {
         count: inflow._count,
       },
       outflow: {
-        amount: Number(outflow._sum.amount || 0),
+        amount: Number(outflow._sum.actualAmount || 0),
         count: outflow._count,
       },
-      net: Number(inflow._sum.amount || 0) - Number(outflow._sum.amount || 0),
-      byBizType: byBizType.map((b) => ({
-        bizType: b.bizType,
-        direction: b.direction === 1 ? 'inflow' : 'outflow',
+      net: Number(inflow._sum.amount || 0) - Number(outflow._sum.actualAmount || 0),
+      byBizType: byPaymentType.map((b) => ({
+        bizType: b.paymentType,
+        direction: 'inflow',
         amount: Number(b._sum.amount || 0),
       })),
     };
@@ -131,7 +147,7 @@ export class FinanceMetricsService {
 
     const contracts = await this.prisma.contract.findMany({
       where,
-      select: { paidAmount: true, totalLessons: true, usedLessons: true, remainLessons: true },
+      select: { paidAmount: true, unearned: true, totalLessons: true, usedLessons: true, remainLessons: true },
     });
 
     let totalPaid = 0;
@@ -139,13 +155,9 @@ export class FinanceMetricsService {
     let totalRemainValue = 0;
 
     contracts.forEach((c) => {
-      const unitPrice = Number(c.paidAmount) / c.totalLessons;
-      const consumedValue = unitPrice * c.usedLessons;
-      const remainValue = unitPrice * c.remainLessons;
-
       totalPaid += Number(c.paidAmount);
-      totalConsumed += consumedValue;
-      totalRemainValue += remainValue;
+      totalConsumed += Number(c.paidAmount) - Number(c.unearned);
+      totalRemainValue += Number(c.unearned);
     });
 
     return {
@@ -213,4 +225,3 @@ export class FinanceMetricsService {
     };
   }
 }
-

@@ -17,22 +17,22 @@ export class CampusMetricsService {
     const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
     // 今日收款
-    const todayIncome = await this.prisma.cashFlow.aggregate({
-      where: { campusId, direction: 1, createdAt: { gte: today } },
+    const todayIncome = await this.prisma.payment.aggregate({
+      where: { campusId, status: 1, paidAt: { gte: today } },
       _sum: { amount: true },
       _count: true,
     });
 
     // 本月收款
-    const monthIncome = await this.prisma.cashFlow.aggregate({
-      where: { campusId, direction: 1, createdAt: { gte: thisMonth } },
+    const monthIncome = await this.prisma.payment.aggregate({
+      where: { campusId, status: 1, paidAt: { gte: thisMonth } },
       _sum: { amount: true },
     });
 
     // 本月消课
-    const monthLesson = await this.prisma.lessonRecord.aggregate({
-      where: { campusId, attendDate: { gte: thisMonth } },
-      _sum: { consumedAmount: true, consumedCount: true },
+    const monthLesson = await this.prisma.lesson.aggregate({
+      where: { campusId, status: 1, lessonDate: { gte: thisMonth } },
+      _sum: { lessonAmount: true, lessonCount: true },
     });
 
     // 活跃学员数
@@ -50,8 +50,8 @@ export class CampusMetricsService {
       todayIncome: Number(todayIncome._sum.amount || 0),
       todayContractCount: todayIncome._count,
       monthIncome: Number(monthIncome._sum.amount || 0),
-      monthLessonAmount: Number(monthLesson._sum.consumedAmount || 0),
-      monthLessonCount: monthLesson._sum.consumedCount || 0,
+      monthLessonAmount: Number(monthLesson._sum.lessonAmount || 0),
+      monthLessonCount: monthLesson._sum.lessonCount || 0,
       activeStudentCount: activeContracts.length,
       teacherCount,
     };
@@ -113,22 +113,22 @@ export class CampusMetricsService {
 
     const metrics = await Promise.all(
       teachers.map(async (teacher) => {
-        const lessons = await this.prisma.lessonRecord.aggregate({
+        const lessons = await this.prisma.lesson.aggregate({
           where: {
             teacherId: teacher.id,
-            attendDate: { gte: thisMonth },
+            lessonDate: { gte: thisMonth },
             status: 1,
           },
-          _sum: { consumedAmount: true, consumedCount: true },
+          _sum: { lessonAmount: true, lessonCount: true },
           _count: true,
         });
 
         return {
           teacherId: teacher.id,
           teacherName: teacher.name,
-          lessonCount: lessons._count,
-          consumedLessons: lessons._sum.consumedCount || 0,
-          consumedAmount: Number(lessons._sum.consumedAmount || 0),
+          lessonRecordCount: lessons._count,
+          consumedLessons: lessons._sum.lessonCount || 0,
+          consumedAmount: Number(lessons._sum.lessonAmount || 0),
         };
       })
     );
@@ -174,16 +174,10 @@ export class CampusMetricsService {
       _sum: { remainLessons: true },
     });
 
-    // 总剩余金额
-    const contracts = await this.prisma.contract.findMany({
+    // 总剩余金额（使用unearned字段）
+    const unearnedSum = await this.prisma.contract.aggregate({
       where: { campusId, status: 1 },
-      select: { paidAmount: true, totalLessons: true, remainLessons: true },
-    });
-
-    let remainingValue = 0;
-    contracts.forEach((c) => {
-      const unitPrice = Number(c.paidAmount) / c.totalLessons;
-      remainingValue += unitPrice * c.remainLessons;
+      _sum: { unearned: true },
     });
 
     return {
@@ -191,8 +185,7 @@ export class CampusMetricsService {
       newContracts,
       expiringContracts,
       totalRemainingLessons: remainingLessons._sum.remainLessons || 0,
-      totalRemainingValue: Math.round(remainingValue),
+      totalRemainingValue: Number(unearnedSum._sum.unearned || 0),
     };
   }
 }
-

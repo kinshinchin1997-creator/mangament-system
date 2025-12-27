@@ -20,6 +20,10 @@ async function main() {
     { code: 'lesson:read', name: '查看消课', module: 'lesson' },
     { code: 'lesson:revoke', name: '撤销消课', module: 'lesson' },
 
+    // 收款权限
+    { code: 'payment:create', name: '创建收款', module: 'payment' },
+    { code: 'payment:read', name: '查看收款', module: 'payment' },
+
     // 退费权限
     { code: 'refund:create', name: '申请退费', module: 'refund' },
     { code: 'refund:read', name: '查看退费', module: 'refund' },
@@ -77,7 +81,7 @@ async function main() {
     });
     createdPermissions.push(p);
   }
-  console.log(`   ✅ 创建了 ${createdPermissions.length} 个权限\n`);
+  console.log(`   ✓ 创建了 ${createdPermissions.length} 个权限\n`);
 
   // ==================== 2. 创建角色 ====================
   console.log('👔 创建角色...');
@@ -97,7 +101,7 @@ async function main() {
     });
     createdRoles.push(r);
   }
-  console.log(`   ✅ 创建了 ${createdRoles.length} 个角色\n`);
+  console.log(`   ✓ 创建了 ${createdRoles.length} 个角色\n`);
 
   // ==================== 3. 角色-权限关联 ====================
   console.log('🔗 分配权限...');
@@ -114,12 +118,12 @@ async function main() {
       create: { roleId: bossRole.id, permissionId: permission.id },
     });
   }
-  console.log(`   ✅ BOSS: 全部权限`);
+  console.log(`   ✓ BOSS: 全部权限`);
 
   // FINANCE 的权限
   const financeRole = roleMap.get('FINANCE')!;
   const financePermCodes = [
-    'contract:read', 'lesson:read', 'refund:read', 'refund:approve', 'refund:complete',
+    'contract:read', 'lesson:read', 'payment:read', 'refund:read', 'refund:approve', 'refund:complete',
     'finance:read', 'finance:report', 'finance:settlement',
     'student:read', 'teacher:read', 'campus:read', 'course-package:read',
   ];
@@ -133,13 +137,14 @@ async function main() {
       });
     }
   }
-  console.log(`   ✅ FINANCE: ${financePermCodes.length} 个权限`);
+  console.log(`   ✓ FINANCE: ${financePermCodes.length} 个权限`);
 
   // CAMPUS_MANAGER 的权限
   const campusManagerRole = roleMap.get('CAMPUS_MANAGER')!;
   const campusManagerPermCodes = [
     'contract:create', 'contract:read', 'contract:update', 'contract:complete',
     'lesson:create', 'lesson:read', 'lesson:revoke',
+    'payment:create', 'payment:read',
     'refund:create', 'refund:read',
     'finance:read',
     'student:create', 'student:read', 'student:update',
@@ -156,7 +161,7 @@ async function main() {
       });
     }
   }
-  console.log(`   ✅ CAMPUS_MANAGER: ${campusManagerPermCodes.length} 个权限`);
+  console.log(`   ✓ CAMPUS_MANAGER: ${campusManagerPermCodes.length} 个权限`);
 
   // TEACHER 的权限
   const teacherRole = roleMap.get('TEACHER')!;
@@ -171,7 +176,7 @@ async function main() {
       });
     }
   }
-  console.log(`   ✅ TEACHER: ${teacherPermCodes.length} 个权限\n`);
+  console.log(`   ✓ TEACHER: ${teacherPermCodes.length} 个权限\n`);
 
   // ==================== 4. 创建校区 ====================
   console.log('🏫 创建校区...');
@@ -191,7 +196,7 @@ async function main() {
     createdCampuses.push(c);
   }
   const campusMap = new Map(createdCampuses.map((c) => [c.code, c]));
-  console.log(`   ✅ 创建了 ${createdCampuses.length} 个校区\n`);
+  console.log(`   ✓ 创建了 ${createdCampuses.length} 个校区\n`);
 
   // ==================== 5. 创建用户 ====================
   console.log('👤 创建用户...');
@@ -227,16 +232,16 @@ async function main() {
       });
     }
   }
-  console.log(`   ✅ 创建了 ${users.length} 个用户\n`);
+  console.log(`   ✓ 创建了 ${users.length} 个用户\n`);
 
   // ==================== 6. 创建课包 ====================
   console.log('📦 创建课包...');
   const packages = [
-    { code: 'ART-48', name: '美术基础班 48课时', category: '美术', standardPrice: 100, totalLessons: 48, totalAmount: 4800, validDays: 365 },
-    { code: 'ART-96', name: '美术进阶班 96课时', category: '美术', standardPrice: 95, totalLessons: 96, totalAmount: 9120, validDays: 730 },
-    { code: 'MUSIC-36', name: '钢琴入门班 36课时', category: '音乐', standardPrice: 150, totalLessons: 36, totalAmount: 5400, validDays: 365 },
-    { code: 'CODE-24', name: '少儿编程入门 24课时', category: '编程', standardPrice: 200, totalLessons: 24, totalAmount: 4800, validDays: 180 },
-    { code: 'DANCE-48', name: '舞蹈基础班 48课时', category: '舞蹈', standardPrice: 80, totalLessons: 48, totalAmount: 3840, validDays: 365 },
+    { code: 'ART-48', name: '美术基础班 48课时', category: '美术', unitPrice: 100, totalLessons: 48, totalAmount: 4800, validDays: 365 },
+    { code: 'ART-96', name: '美术进阶班 96课时', category: '美术', unitPrice: 95, totalLessons: 96, totalAmount: 9120, validDays: 730 },
+    { code: 'MUSIC-36', name: '钢琴入门班 36课时', category: '音乐', unitPrice: 150, totalLessons: 36, totalAmount: 5400, validDays: 365 },
+    { code: 'CODE-24', name: '少儿编程入门 24课时', category: '编程', unitPrice: 200, totalLessons: 24, totalAmount: 4800, validDays: 180 },
+    { code: 'DANCE-48', name: '舞蹈基础班 48课时', category: '舞蹈', unitPrice: 80, totalLessons: 48, totalAmount: 3840, validDays: 365 },
   ];
 
   for (const pkg of packages) {
@@ -246,7 +251,7 @@ async function main() {
       create: pkg,
     });
   }
-  console.log(`   ✅ 创建了 ${packages.length} 个课包\n`);
+  console.log(`   ✓ 创建了 ${packages.length} 个课包\n`);
 
   // ==================== 7. 创建教师 ====================
   console.log('👨‍🏫 创建教师...');
@@ -266,16 +271,16 @@ async function main() {
       create: { ...teacherInfo, campusId: campus!.id },
     });
   }
-  console.log(`   ✅ 创建了 ${teachers.length} 个教师\n`);
+  console.log(`   ✓ 创建了 ${teachers.length} 个教师\n`);
 
   // ==================== 完成 ====================
-  console.log('═══════════════════════════════════════════');
+  console.log('══════════════════════════════════════════');
   console.log('✅ 数据初始化完成！');
-  console.log('═══════════════════════════════════════════');
+  console.log('══════════════════════════════════════════');
   console.log('');
   console.log('📋 默认账号：');
-  console.log('   管理员:      admin / 123456');
-  console.log('   财务:        finance / 123456');
+  console.log('   管理员:       admin / 123456');
+  console.log('   财务:         finance / 123456');
   console.log('   朝阳校区校长: manager1 / 123456');
   console.log('   海淀校区校长: manager2 / 123456');
   console.log('');
@@ -289,4 +294,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-

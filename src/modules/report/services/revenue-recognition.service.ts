@@ -19,19 +19,19 @@ export class RevenueRecognitionService {
   async getSummary(query: ReportQueryDto) {
     const where = this.buildWhere(query);
 
-    const summary = await this.prisma.lessonRecord.aggregate({
+    const summary = await this.prisma.lesson.aggregate({
       where,
       _count: true,
       _sum: {
-        consumedCount: true,
-        consumedAmount: true,
+        lessonCount: true,
+        lessonAmount: true,
       },
     });
 
     return {
       totalRecords: summary._count,
-      totalLessons: summary._sum?.consumedCount || 0,
-      totalRevenue: DecimalUtil.format((summary._sum?.consumedAmount?.toNumber() || 0).toString()),
+      totalLessons: summary._sum?.lessonCount || 0,
+      totalRevenue: DecimalUtil.format((Number(summary._sum?.lessonAmount) || 0).toString()),
     };
   }
 
@@ -41,22 +41,22 @@ export class RevenueRecognitionService {
   async getByDate(query: ReportQueryDto) {
     const where = this.buildWhere(query);
 
-    const records = await this.prisma.lessonRecord.groupBy({
-      by: ['attendDate'],
+    const records = await this.prisma.lesson.groupBy({
+      by: ['lessonDate'],
       where,
       _count: true,
       _sum: {
-        consumedCount: true,
-        consumedAmount: true,
+        lessonCount: true,
+        lessonAmount: true,
       },
-      orderBy: { attendDate: 'asc' },
+      orderBy: { lessonDate: 'asc' },
     });
 
     return records.map((r) => ({
-      date: r.attendDate,
+      date: r.lessonDate,
       recordCount: r._count,
-      lessonCount: r._sum?.consumedCount || 0,
-      revenue: DecimalUtil.format((r._sum?.consumedAmount?.toNumber() || 0).toString()),
+      lessonCount: r._sum?.lessonCount || 0,
+      revenue: DecimalUtil.format((Number(r._sum?.lessonAmount) || 0).toString()),
     }));
   }
 
@@ -66,7 +66,7 @@ export class RevenueRecognitionService {
   async getByPackage(query: ReportQueryDto) {
     const where = this.buildWhere(query);
 
-    const records = await this.prisma.lessonRecord.findMany({
+    const records = await this.prisma.lesson.findMany({
       where,
       include: {
         contract: {
@@ -93,8 +93,8 @@ export class RevenueRecognitionService {
 
       const cat = categoryMap.get(category);
       cat.recordCount++;
-      cat.lessonCount += record.consumedCount;
-      cat.revenue += record.consumedAmount.toNumber();
+      cat.lessonCount += record.lessonCount;
+      cat.revenue += Number(record.lessonAmount);
     }
 
     return Array.from(categoryMap.values()).map((cat) => ({
@@ -114,21 +114,21 @@ export class RevenueRecognitionService {
 
     const where: any = {
       status: 1,
-      attendDate: { gte: today, lt: tomorrow },
+      lessonDate: { gte: today, lt: tomorrow },
     };
     if (campusId) where.campusId = campusId;
 
-    const summary = await this.prisma.lessonRecord.aggregate({
+    const summary = await this.prisma.lesson.aggregate({
       where,
       _count: true,
-      _sum: { consumedCount: true, consumedAmount: true },
+      _sum: { lessonCount: true, lessonAmount: true },
     });
 
     return {
       date: today.toISOString().slice(0, 10),
       recordCount: summary._count,
-      lessonCount: summary._sum?.consumedCount || 0,
-      revenue: DecimalUtil.format((summary._sum?.consumedAmount?.toNumber() || 0).toString()),
+      lessonCount: summary._sum?.lessonCount || 0,
+      revenue: DecimalUtil.format((Number(summary._sum?.lessonAmount) || 0).toString()),
     };
   }
 
@@ -142,21 +142,21 @@ export class RevenueRecognitionService {
 
     const where: any = {
       status: 1,
-      attendDate: { gte: startOfMonth, lt: startOfNextMonth },
+      lessonDate: { gte: startOfMonth, lt: startOfNextMonth },
     };
     if (campusId) where.campusId = campusId;
 
-    const summary = await this.prisma.lessonRecord.aggregate({
+    const summary = await this.prisma.lesson.aggregate({
       where,
       _count: true,
-      _sum: { consumedCount: true, consumedAmount: true },
+      _sum: { lessonCount: true, lessonAmount: true },
     });
 
     return {
       month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
       recordCount: summary._count,
-      lessonCount: summary._sum?.consumedCount || 0,
-      revenue: DecimalUtil.format((summary._sum?.consumedAmount?.toNumber() || 0).toString()),
+      lessonCount: summary._sum?.lessonCount || 0,
+      revenue: DecimalUtil.format((Number(summary._sum?.lessonAmount) || 0).toString()),
     };
   }
 
@@ -168,7 +168,7 @@ export class RevenueRecognitionService {
     }
 
     if (query.startDate && query.endDate) {
-      where.attendDate = {
+      where.lessonDate = {
         gte: new Date(query.startDate),
         lte: new Date(query.endDate),
       };

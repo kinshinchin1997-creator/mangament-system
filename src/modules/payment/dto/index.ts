@@ -61,6 +61,11 @@ export class QueryPaymentDto extends PaginationDto {
   @IsString()
   payMethod?: string;
 
+  @ApiPropertyOptional({ description: '收款类型', enum: ['SIGN', 'INSTALLMENT', 'RENEWAL'] })
+  @IsOptional()
+  @IsString()
+  paymentType?: string;
+
   @ApiPropertyOptional({ description: '搜索关键词' })
   @IsOptional()
   @IsString()

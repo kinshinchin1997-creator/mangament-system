@@ -9,108 +9,70 @@ import { Prisma } from '@prisma/client';
  * 现金流核心服务
  * 
  * 核心职责：
- * 1. 记录资金流入（合同收款）
- * 2. 记录资金流出（退费）
- * 3. 现金流查询与分析
- * 4. 预收款 -> 确认收入 转换计算
+ * 1. 收款记录查询（通过Payment表）
+ * 2. 退费记录查询（通过Refund表）
+ * 3. 现金流汇总分析
+ * 4. 预收款余额计算
  */
 @Injectable()
 export class CashflowService {
   constructor(private prisma: PrismaService) {}
 
   /**
-   * 记录资金流入（内部调用，事务中使用）
-   * 
-   * @param tx Prisma事务
-   * @param data 流入数据
+   * 记录资金流入（收款）
    */
   async recordInflow(tx: Prisma.TransactionClient, data: RecordInflowDto) {
-    const flowNo = NumberGenerator.generateCashFlowNo();
+    const paymentNo = NumberGenerator.generateCashFlowNo();
 
-    return tx.cashFlow.create({
+    return tx.payment.create({
       data: {
-        flowNo,
-        direction: 1, // 流入
-        bizType: data.bizType,
-        bizId: data.bizId,
-        bizNo: data.bizNo,
+        paymentNo,
         contractId: data.contractId,
+        campusId: data.campusId,
         amount: data.amount,
         payMethod: data.payMethod,
-        campusId: data.campusId,
+        paymentType: 'SIGN',
+        status: 1,
+        paidAt: new Date(),
         createdById: data.createdById,
         remark: data.remark,
-        snapshotData: data.snapshotData || {},
       },
     });
   }
 
   /**
-   * 记录资金流出（内部调用，事务中使用）
-   * 
-   * @param tx Prisma事务
-   * @param data 流出数据
+   * 记录资金流出（退费）- 通过Refund表完成
    */
   async recordOutflow(tx: Prisma.TransactionClient, data: RecordOutflowDto) {
-    const flowNo = NumberGenerator.generateCashFlowNo();
-
-    return tx.cashFlow.create({
-      data: {
-        flowNo,
-        direction: -1, // 流出
-        bizType: data.bizType,
-        bizId: data.bizId,
-        bizNo: data.bizNo,
-        contractId: data.contractId,
-        refundId: data.refundId,
-        amount: data.amount,
-        payMethod: data.payMethod,
-        campusId: data.campusId,
-        createdById: data.createdById,
-        remark: data.remark,
-        snapshotData: data.snapshotData || {},
-      },
-    });
+    // 退费通过Refund表的状态更新完成，不需要单独的现金流出记录
+    // 此方法保留接口兼容性
+    return { success: true };
   }
 
   /**
-   * 查询现金流记录
+   * 获取收款流水（Payment）
    */
-  async findAll(query: QueryCashflowDto) {
-    const {
-      page = 1,
-      pageSize = 20,
-      campusId,
-      direction,
-      bizType,
-      startDate,
-      endDate,
-      keyword,
-    } = query;
+  async getPaymentRecords(query: QueryCashflowDto) {
+    const { page = 1, pageSize = 20, campusId, startDate, endDate, keyword } = query;
 
-    const where: any = {};
+    const where: any = { status: 1 };
 
     if (campusId) where.campusId = campusId;
-    if (direction) where.direction = direction;
-    if (bizType) where.bizType = bizType;
-
     if (keyword) {
       where.OR = [
-        { flowNo: { contains: keyword } },
-        { bizNo: { contains: keyword } },
+        { paymentNo: { contains: keyword } },
         { remark: { contains: keyword } },
       ];
     }
-
     if (startDate && endDate) {
-      where.createdAt = {
+      where.paidAt = {
         gte: new Date(startDate),
         lte: new Date(endDate),
       };
     }
 
     const [data, total] = await Promise.all([
-      this.prisma.cashFlow.findMany({
+      this.prisma.payment.findMany({
         where,
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -120,12 +82,53 @@ export class CashflowService {
               student: { select: { id: true, name: true } },
             },
           },
-          refund: true,
           campus: { select: { id: true, name: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { paidAt: 'desc' },
       }),
-      this.prisma.cashFlow.count({ where }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return new PaginatedResponseDto(data, total, page, pageSize);
+  }
+
+  /**
+   * 获取退费流水（Refund）
+   */
+  async getRefundRecords(query: QueryCashflowDto) {
+    const { page = 1, pageSize = 20, campusId, startDate, endDate, keyword } = query;
+
+    const where: any = { status: 3 }; // 已完成的退费
+
+    if (campusId) where.campusId = campusId;
+    if (keyword) {
+      where.OR = [
+        { refundNo: { contains: keyword } },
+      ];
+    }
+    if (startDate && endDate) {
+      where.refundedAt = {
+        gte: new Date(startDate),
+        lte: new Date(endDate),
+      };
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.refund.findMany({
+        where,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          contract: {
+            include: {
+              student: { select: { id: true, name: true } },
+            },
+          },
+          campus: { select: { id: true, name: true } },
+        },
+        orderBy: { refundedAt: 'desc' },
+      }),
+      this.prisma.refund.count({ where }),
     ]);
 
     return new PaginatedResponseDto(data, total, page, pageSize);
@@ -137,31 +140,34 @@ export class CashflowService {
   async getSummary(query: CashflowSummaryDto) {
     const { campusId, startDate, endDate } = query;
 
-    const where: any = {};
-    if (campusId) where.campusId = campusId;
+    const paymentWhere: any = { status: 1 };
+    const refundWhere: any = { status: 3 };
+    
+    if (campusId) {
+      paymentWhere.campusId = campusId;
+      refundWhere.campusId = campusId;
+    }
     if (startDate && endDate) {
-      where.createdAt = {
-        gte: new Date(startDate),
-        lte: new Date(endDate),
-      };
+      paymentWhere.paidAt = { gte: new Date(startDate), lte: new Date(endDate) };
+      refundWhere.refundedAt = { gte: new Date(startDate), lte: new Date(endDate) };
     }
 
-    // 流入总额
-    const inflowStats = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: 1 },
+    // 收款统计
+    const inflowStats = await this.prisma.payment.aggregate({
+      where: paymentWhere,
       _sum: { amount: true },
       _count: true,
     });
 
-    // 流出总额
-    const outflowStats = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: -1 },
-      _sum: { amount: true },
+    // 退费统计
+    const outflowStats = await this.prisma.refund.aggregate({
+      where: refundWhere,
+      _sum: { actualAmount: true },
       _count: true,
     });
 
     const totalInflow = inflowStats._sum.amount || 0;
-    const totalOutflow = outflowStats._sum.amount || 0;
+    const totalOutflow = outflowStats._sum.actualAmount || 0;
     const netCashflow = DecimalUtil.subtract(totalInflow.toString(), totalOutflow.toString());
 
     return {
@@ -180,36 +186,48 @@ export class CashflowService {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    const where: any = {
-      createdAt: { gte: startDate },
-    };
-    if (campusId) where.campusId = campusId;
+    const paymentWhere: any = { status: 1, paidAt: { gte: startDate } };
+    const refundWhere: any = { status: 3, refundedAt: { gte: startDate } };
+    
+    if (campusId) {
+      paymentWhere.campusId = campusId;
+      refundWhere.campusId = campusId;
+    }
 
-    // 获取原始数据
-    const records = await this.prisma.cashFlow.findMany({
-      where,
-      select: {
-        direction: true,
-        amount: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'asc' },
+    // 获取收款数据
+    const payments = await this.prisma.payment.findMany({
+      where: paymentWhere,
+      select: { amount: true, paidAt: true },
+      orderBy: { paidAt: 'asc' },
+    });
+
+    // 获取退费数据
+    const refunds = await this.prisma.refund.findMany({
+      where: refundWhere,
+      select: { actualAmount: true, refundedAt: true },
+      orderBy: { refundedAt: 'asc' },
     });
 
     // 按日期分组
     const dateMap = new Map<string, { inflow: number; outflow: number }>();
 
-    records.forEach((r) => {
-      const dateKey = r.createdAt.toISOString().slice(0, 10);
+    payments.forEach((p) => {
+      const dateKey = p.paidAt.toISOString().slice(0, 10);
       if (!dateMap.has(dateKey)) {
         dateMap.set(dateKey, { inflow: 0, outflow: 0 });
       }
       const stat = dateMap.get(dateKey)!;
-      const amount = Number(r.amount);
-      if (r.direction === 1) {
-        stat.inflow = DecimalUtil.toNumber(DecimalUtil.add(stat.inflow.toString(), amount.toString()));
-      } else {
-        stat.outflow = DecimalUtil.toNumber(DecimalUtil.add(stat.outflow.toString(), amount.toString()));
+      stat.inflow = DecimalUtil.toNumber(DecimalUtil.add(stat.inflow.toString(), p.amount.toString()));
+    });
+
+    refunds.forEach((r) => {
+      if (r.refundedAt) {
+        const dateKey = r.refundedAt.toISOString().slice(0, 10);
+        if (!dateMap.has(dateKey)) {
+          dateMap.set(dateKey, { inflow: 0, outflow: 0 });
+        }
+        const stat = dateMap.get(dateKey)!;
+        stat.outflow = DecimalUtil.toNumber(DecimalUtil.add(stat.outflow.toString(), r.actualAmount.toString()));
       }
     });
 
@@ -227,73 +245,218 @@ export class CashflowService {
   }
 
   /**
-   * 按业务类型分组统计
+   * 按校区分组统计
    */
-  async groupByBizType(startDate: string, endDate: string, campusId?: string) {
-    const where: any = {
-      createdAt: {
-        gte: new Date(startDate),
-        lte: new Date(endDate),
-      },
+  async groupByCampus(startDate: string, endDate: string) {
+    const paymentWhere: any = {
+      status: 1,
+      paidAt: { gte: new Date(startDate), lte: new Date(endDate) },
     };
-    if (campusId) where.campusId = campusId;
+    const refundWhere: any = {
+      status: 3,
+      refundedAt: { gte: new Date(startDate), lte: new Date(endDate) },
+    };
 
-    const result = await this.prisma.cashFlow.groupBy({
-      by: ['bizType', 'direction'],
-      where,
+    const paymentResult = await this.prisma.payment.groupBy({
+      by: ['campusId'],
+      where: paymentWhere,
       _sum: { amount: true },
       _count: true,
     });
 
-    const bizTypeNames: Record<string, string> = {
-      CONTRACT: '合同收款',
-      REFUND: '退费',
-      LESSON: '消课确收',
-    };
-
-    return result.map((r) => ({
-      bizType: r.bizType,
-      bizTypeName: bizTypeNames[r.bizType] || r.bizType,
-      direction: r.direction === 1 ? '流入' : '流出',
-      count: r._count,
-      amount: r._sum.amount,
-    }));
-  }
-
-  /**
-   * 按校区分组统计
-   */
-  async groupByCampus(startDate: string, endDate: string) {
-    const where: any = {
-      createdAt: {
-        gte: new Date(startDate),
-        lte: new Date(endDate),
-      },
-    };
-
-    const result = await this.prisma.cashFlow.groupBy({
-      by: ['campusId', 'direction'],
-      where,
-      _sum: { amount: true },
+    const refundResult = await this.prisma.refund.groupBy({
+      by: ['campusId'],
+      where: refundWhere,
+      _sum: { actualAmount: true },
       _count: true,
     });
 
     // 获取校区信息
-    const campusIds = [...new Set(result.map((r) => r.campusId))];
+    const allCampusIds = [...new Set([
+      ...paymentResult.map((r) => r.campusId),
+      ...refundResult.map((r) => r.campusId),
+    ])];
+    
+    const campuses = await this.prisma.campus.findMany({
+      where: { id: { in: allCampusIds } },
+      select: { id: true, name: true },
+    });
+    const campusMap = new Map(campuses.map((c) => [c.id, c.name]));
+
+    // 合并结果
+    const resultMap = new Map<string, { campusId: string; campusName: string; inflow: number; outflow: number; inflowCount: number; outflowCount: number }>();
+
+    paymentResult.forEach((p) => {
+      if (!resultMap.has(p.campusId)) {
+        resultMap.set(p.campusId, {
+          campusId: p.campusId,
+          campusName: campusMap.get(p.campusId) || '未知',
+          inflow: 0,
+          outflow: 0,
+          inflowCount: 0,
+          outflowCount: 0,
+        });
+      }
+      const item = resultMap.get(p.campusId)!;
+      item.inflow = Number(p._sum.amount || 0);
+      item.inflowCount = p._count;
+    });
+
+    refundResult.forEach((r) => {
+      if (!resultMap.has(r.campusId)) {
+        resultMap.set(r.campusId, {
+          campusId: r.campusId,
+          campusName: campusMap.get(r.campusId) || '未知',
+          inflow: 0,
+          outflow: 0,
+          inflowCount: 0,
+          outflowCount: 0,
+        });
+      }
+      const item = resultMap.get(r.campusId)!;
+      item.outflow = Number(r._sum.actualAmount || 0);
+      item.outflowCount = r._count;
+    });
+
+    return Array.from(resultMap.values()).map((item) => ({
+      ...item,
+      net: item.inflow - item.outflow,
+    }));
+  }
+
+  /**
+   * 获取预收款余额（未消课金额）
+   */
+  async getPrepaidBalance(campusId?: string) {
+    const where: any = { status: 1 };
+    if (campusId) where.campusId = campusId;
+
+    const contracts = await this.prisma.contract.aggregate({
+      where,
+      _sum: { unearned: true, paidAmount: true },
+      _count: true,
+    });
+
+    // 按校区分组
+    const byCampus = await this.prisma.contract.groupBy({
+      by: ['campusId'],
+      where,
+      _sum: { unearned: true },
+      _count: true,
+    });
+
+    const campusIds = byCampus.map((c) => c.campusId);
     const campuses = await this.prisma.campus.findMany({
       where: { id: { in: campusIds } },
       select: { id: true, name: true },
     });
-
     const campusMap = new Map(campuses.map((c) => [c.id, c.name]));
 
-    return result.map((r) => ({
-      campusId: r.campusId,
-      campusName: campusMap.get(r.campusId) || '未知',
-      direction: r.direction === 1 ? '流入' : '流出',
-      count: r._count,
-      amount: r._sum.amount,
-    }));
+    return {
+      totalUnearned: contracts._sum.unearned || 0,
+      totalPaid: contracts._sum.paidAmount || 0,
+      contractCount: contracts._count,
+      byCampus: byCampus.map((c) => ({
+        campusId: c.campusId,
+        campusName: campusMap.get(c.campusId) || '未知',
+        unearned: c._sum.unearned || 0,
+        contractCount: c._count,
+      })),
+    };
+  }
+
+  /**
+   * 获取现金流记录列表（收款+退费综合）
+   */
+  async findAll(query: QueryCashflowDto) {
+    const { page = 1, pageSize = 20, campusId, startDate, endDate, keyword, flowType } = query;
+
+    // 根据 flowType 决定返回什么类型的记录
+    if (flowType === 'inflow' || !flowType) {
+      return this.getPaymentRecords(query);
+    } else if (flowType === 'outflow') {
+      return this.getRefundRecords(query);
+    }
+
+    // 综合查询：返回收款和退费的综合视图
+    // 创建大页查询对象以获取所有记录
+    const largeQuery = Object.assign(Object.create(Object.getPrototypeOf(query)), query, { pageSize: 1000 });
+    const [payments, refunds] = await Promise.all([
+      this.getPaymentRecords(largeQuery),
+      this.getRefundRecords(largeQuery),
+    ]);
+
+    // 合并并按时间排序
+    const allRecords = [
+      ...payments.data.map((p: any) => ({ ...p, type: 'inflow', recordTime: p.paidAt })),
+      ...refunds.data.map((r: any) => ({ ...r, type: 'outflow', recordTime: r.refundedAt })),
+    ].sort((a, b) => new Date(b.recordTime).getTime() - new Date(a.recordTime).getTime());
+
+    const startIdx = (page - 1) * pageSize;
+    const paginatedRecords = allRecords.slice(startIdx, startIdx + pageSize);
+
+    return new PaginatedResponseDto(paginatedRecords, allRecords.length, page, pageSize);
+  }
+
+  /**
+   * 按业务类型分组统计
+   */
+  async groupByBizType(startDate: string, endDate: string, campusId?: string) {
+    const paymentWhere: any = {
+      status: 1,
+      paidAt: { gte: new Date(startDate), lte: new Date(endDate) },
+    };
+    if (campusId) paymentWhere.campusId = campusId;
+
+    // 按收款类型分组
+    const byPaymentType = await this.prisma.payment.groupBy({
+      by: ['paymentType'],
+      where: paymentWhere,
+      _sum: { amount: true },
+      _count: true,
+    });
+
+    // 按支付方式分组
+    const byPayMethod = await this.prisma.payment.groupBy({
+      by: ['payMethod'],
+      where: paymentWhere,
+      _sum: { amount: true },
+      _count: true,
+    });
+
+    return {
+      byPaymentType: byPaymentType.map((t) => ({
+        bizType: t.paymentType,
+        bizTypeName: this.getPaymentTypeName(t.paymentType),
+        amount: Number(t._sum.amount || 0),
+        count: t._count,
+      })),
+      byPayMethod: byPayMethod.map((m) => ({
+        payMethod: m.payMethod,
+        payMethodName: this.getPayMethodName(m.payMethod),
+        amount: Number(m._sum.amount || 0),
+        count: m._count,
+      })),
+    };
+  }
+
+  private getPaymentTypeName(code: string): string {
+    const types: Record<string, string> = {
+      SIGN: '签约首付',
+      INSTALLMENT: '分期付款',
+      RENEWAL: '续费',
+    };
+    return types[code] || code;
+  }
+
+  private getPayMethodName(code: string): string {
+    const methods: Record<string, string> = {
+      CASH: '现金',
+      WECHAT: '微信支付',
+      ALIPAY: '支付宝',
+      BANK: '银行转账',
+      POS: 'POS刷卡',
+    };
+    return methods[code] || code;
   }
 }
-

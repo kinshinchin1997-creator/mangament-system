@@ -2,14 +2,14 @@ import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef 
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginatedResponseDto } from '../../common/dto';
 import { NumberGenerator, DecimalUtil } from '../../common/utils';
-import { CashFlowService } from '../finance/cash-flow.service';
+import { PaymentService } from '../payment/payment.service';
 
 @Injectable()
 export class ContractService {
   constructor(
     private prisma: PrismaService,
-    @Inject(forwardRef(() => CashFlowService))
-    private cashFlowService: CashFlowService,
+    @Inject(forwardRef(() => PaymentService))
+    private paymentService: PaymentService,
   ) {}
 
   /**
@@ -23,11 +23,14 @@ export class ContractService {
     if (!coursePackage) throw new NotFoundException('课包不存在');
     if (coursePackage.status !== 1) throw new BadRequestException('该课包已停售');
 
-    const totalAmount = coursePackage.totalAmount;
+    const originalAmount = coursePackage.totalAmount;
     const discountAmount = createDto.discountAmount || 0;
-    const paidAmount = DecimalUtil.subtract(totalAmount.toString(), discountAmount.toString());
+    const contractAmount = DecimalUtil.subtract(originalAmount.toString(), discountAmount.toString());
 
-    if (DecimalUtil.lt(paidAmount, '0')) throw new BadRequestException('优惠金额不能大于课包总价');
+    if (DecimalUtil.lt(contractAmount, '0')) throw new BadRequestException('优惠金额不能大于课包总价');
+
+    // 计算课时单价 = 合同金额 / 总课时
+    const unitPrice = DecimalUtil.divide(contractAmount, coursePackage.totalLessons.toString());
 
     const startDate = new Date(createDto.startDate || new Date());
     const endDate = new Date(startDate);
@@ -42,22 +45,49 @@ export class ContractService {
           studentId: createDto.studentId,
           campusId: createDto.campusId,
           packageId: createDto.packageId,
-          totalAmount: DecimalUtil.toNumber(totalAmount.toString()),
-          paidAmount: DecimalUtil.toNumber(paidAmount),
+          originalAmount: DecimalUtil.toNumber(originalAmount.toString()),
           discountAmount: DecimalUtil.toNumber(discountAmount.toString()),
+          contractAmount: DecimalUtil.toNumber(contractAmount),
+          paidAmount: 0, // 初始已收金额为0，通过Payment记录
           totalLessons: coursePackage.totalLessons,
           usedLessons: 0,
           remainLessons: coursePackage.totalLessons,
+          unitPrice: DecimalUtil.toNumber(unitPrice),
+          unearned: 0, // 初始未消课金额为0，收款后更新
           startDate,
           endDate,
-          payMethod: createDto.payMethod,
-          payTime: new Date(),
+          signedAt: new Date(),
           createdById: currentUser.userId,
+          remark: createDto.remark,
           snapshotData: { coursePackage, student },
         },
       });
 
-      await this.cashFlowService.createContractInflow(tx, newContract, currentUser.userId);
+      // 如果有首付金额，创建收款记录
+      if (createDto.paidAmount && DecimalUtil.gt(createDto.paidAmount.toString(), '0')) {
+        await this.paymentService.createPayment(tx, {
+          contractId: newContract.id,
+          campusId: newContract.campusId,
+          amount: createDto.paidAmount,
+          payMethod: createDto.payMethod || 'CASH',
+          paymentType: 'SIGN',
+          createdById: currentUser.userId,
+          remark: `签约首付: ${contractNo}`,
+        });
+
+        // 更新合同已收金额和未消课金额
+        const paidAmount = DecimalUtil.toNumber(createDto.paidAmount.toString());
+        const unearned = DecimalUtil.multiply(unitPrice, coursePackage.totalLessons.toString());
+        
+        await tx.contract.update({
+          where: { id: newContract.id },
+          data: {
+            paidAmount,
+            unearned: DecimalUtil.toNumber(unearned),
+          },
+        });
+      }
+
       return newContract;
     });
 
@@ -108,14 +138,13 @@ export class ContractService {
         campus: true,
         package: true,
         createdBy: { select: { id: true, realName: true } },
-        lessonRecords: { where: { status: 1 }, orderBy: { attendDate: 'desc' }, take: 10 },
+        payments: { orderBy: { paidAt: 'desc' } },
+        lessons: { where: { status: 1 }, orderBy: { lessonDate: 'desc' }, take: 10 },
         refunds: { orderBy: { createdAt: 'desc' } },
       },
     });
     if (!contract) throw new NotFoundException('合同不存在');
-
-    const unitPrice = DecimalUtil.divide(contract.paidAmount.toString(), contract.totalLessons.toString());
-    return { ...contract, unitPrice };
+    return contract;
   }
 
   async complete(id: string) {
@@ -134,7 +163,7 @@ export class ContractService {
     const summary = await this.prisma.contract.aggregate({
       where,
       _count: true,
-      _sum: { paidAmount: true, usedLessons: true, remainLessons: true },
+      _sum: { paidAmount: true, usedLessons: true, remainLessons: true, unearned: true },
     });
 
     return {
@@ -142,6 +171,7 @@ export class ContractService {
       totalPaidAmount: summary._sum.paidAmount || 0,
       totalUsedLessons: summary._sum.usedLessons || 0,
       totalRemainLessons: summary._sum.remainLessons || 0,
+      totalUnearned: summary._sum.unearned || 0,
     };
   }
 
@@ -154,10 +184,17 @@ export class ContractService {
     const newRemainLessons = contract.remainLessons - lessonCount;
     if (newRemainLessons < 0) throw new BadRequestException('剩余课时不足');
 
+    const newUnearned = DecimalUtil.multiply(contract.unitPrice.toString(), newRemainLessons.toString());
     const newStatus = newRemainLessons === 0 ? 2 : contract.status;
+
     return prisma.contract.update({
       where: { id: contractId },
-      data: { usedLessons: newUsedLessons, remainLessons: newRemainLessons, status: newStatus },
+      data: {
+        usedLessons: newUsedLessons,
+        remainLessons: newRemainLessons,
+        unearned: DecimalUtil.toNumber(newUnearned),
+        status: newStatus,
+      },
     });
   }
 }

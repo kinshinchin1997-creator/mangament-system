@@ -41,42 +41,43 @@ export class DailySettlementService {
       throw new BadRequestException('该日期已完成日结');
     }
 
-    // 统计当日流入
-    const inflowStats = await this.prisma.cashFlow.aggregate({
+    // 统计当日流入（收款）
+    const inflowStats = await this.prisma.payment.aggregate({
       where: {
         campusId,
-        direction: 1,
-        createdAt: { gte: date, lt: nextDate },
+        status: 1,
+        paidAt: { gte: date, lt: nextDate },
       },
       _sum: { amount: true },
       _count: true,
     });
 
-    // 统计当日流出
-    const outflowStats = await this.prisma.cashFlow.aggregate({
+    // 统计当日流出（退费）
+    const outflowStats = await this.prisma.refund.aggregate({
       where: {
         campusId,
-        direction: -1,
-        createdAt: { gte: date, lt: nextDate },
+        status: 3, // 已完成的退费
+        refundedAt: { gte: date, lt: nextDate },
       },
-      _sum: { amount: true },
+      _sum: { actualAmount: true },
       _count: true,
     });
 
     // 统计当日消课（确认收入）
-    const lessonStats = await this.prisma.lessonRecord.aggregate({
+    const lessonStats = await this.prisma.lesson.aggregate({
       where: {
         campusId,
-        attendDate: { gte: date, lt: nextDate },
+        status: 1,
+        lessonDate: { gte: date, lt: nextDate },
       },
-      _sum: { consumedAmount: true },
+      _sum: { lessonAmount: true },
       _count: true,
     });
 
     // 计算各项金额
     const totalIncome = inflowStats._sum.amount || 0;
-    const totalRefund = outflowStats._sum.amount || 0;
-    const confirmedRevenue = lessonStats._sum.consumedAmount || 0;
+    const totalRefund = outflowStats._sum.actualAmount || 0;
+    const confirmedRevenue = lessonStats._sum.lessonAmount || 0;
     const netIncome = DecimalUtil.toNumber(
       DecimalUtil.subtract(totalIncome.toString(), totalRefund.toString())
     );

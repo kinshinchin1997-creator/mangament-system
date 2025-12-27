@@ -1,150 +1,221 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreatePaymentDto, QueryPaymentDto } from './dto';
 import { PaginatedResponseDto } from '../../common/dto';
 import { NumberGenerator, DecimalUtil } from '../../common/utils';
-import { CashflowService } from '../cashflow/cashflow.service';
+import { Prisma } from '@prisma/client';
 
 /**
  * 收款服务
  * 
  * 处理所有收款业务逻辑：
  * 1. 合同签约收款（产生预收款）
- * 2. 收款记录管理
- * 3. 收款统计
+ * 2. 分期付款
+ * 3. 续费收款
  */
 @Injectable()
 export class PaymentService {
-  constructor(
-    private prisma: PrismaService,
-    @Inject(forwardRef(() => CashflowService))
-    private cashflowService: CashflowService,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   /**
-   * 合同收款（签约/续费）
-   * 
-   * 业务流程：
-   * 1. 校验学员、课包
-   * 2. 计算金额（课包总价 - 优惠）
-   * 3. 创建合同记录
-   * 4. 生成现金流入记录
-   * 5. 保存数据快照
+   * 创建收款记录（内部使用，事务中调用）
+   */
+  async createPayment(tx: Prisma.TransactionClient, data: {
+    contractId: string;
+    campusId: string;
+    amount: number;
+    payMethod: string;
+    paymentType: string;
+    createdById: string;
+    remark?: string;
+    transactionNo?: string;
+  }) {
+    const paymentNo = NumberGenerator.generateCashFlowNo();
+
+    return tx.payment.create({
+      data: {
+        paymentNo,
+        contractId: data.contractId,
+        campusId: data.campusId,
+        amount: data.amount,
+        payMethod: data.payMethod,
+        paymentType: data.paymentType,
+        status: 1,
+        paidAt: new Date(),
+        createdById: data.createdById,
+        remark: data.remark,
+        transactionNo: data.transactionNo,
+      },
+    });
+  }
+
+  /**
+   * 合同收款（签约/续费）- 创建合同并收款
    */
   async createContractPayment(createDto: CreatePaymentDto, currentUser: any) {
-    // 1. 校验学员
-    const student = await this.prisma.student.findUnique({
-      where: { id: createDto.studentId },
-    });
-    if (!student) throw new NotFoundException('学员不存在');
-
-    // 2. 校验课包
+    // 获取课包信息
     const coursePackage = await this.prisma.coursePackage.findUnique({
       where: { id: createDto.packageId },
     });
     if (!coursePackage) throw new NotFoundException('课包不存在');
     if (coursePackage.status !== 1) throw new BadRequestException('该课包已停售');
 
-    // 3. 计算金额
-    const totalAmount = coursePackage.totalAmount;
+    // 获取学员信息
+    const student = await this.prisma.student.findUnique({
+      where: { id: createDto.studentId },
+    });
+    if (!student) throw new NotFoundException('学员不存在');
+
+    // 计算金额
     const discountAmount = createDto.discountAmount || 0;
-    const paidAmount = DecimalUtil.subtract(totalAmount.toString(), discountAmount.toString());
+    const contractAmount = DecimalUtil.toNumber(
+      DecimalUtil.subtract(coursePackage.totalAmount.toString(), discountAmount.toString())
+    );
+    const unitPrice = DecimalUtil.toNumber(
+      DecimalUtil.divide(contractAmount.toString(), coursePackage.totalLessons.toString())
+    );
 
-    if (DecimalUtil.lt(paidAmount, '0')) {
-      throw new BadRequestException('优惠金额不能大于课包总价');
-    }
-
-    // 4. 计算有效期
-    const startDate = new Date(createDto.startDate || new Date());
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + coursePackage.validDays);
-
-    // 5. 生成合同编号
-    const contractNo = NumberGenerator.generateContractNo();
-
-    // 6. 事务处理
-    const contract = await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // 创建合同
-      const newContract = await tx.contract.create({
+      const contractNo = NumberGenerator.generateContractNo();
+      const startDate = createDto.startDate ? new Date(createDto.startDate) : new Date();
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + coursePackage.validDays);
+
+      const contract = await tx.contract.create({
         data: {
           contractNo,
           studentId: createDto.studentId,
           campusId: createDto.campusId,
           packageId: createDto.packageId,
-          totalAmount: DecimalUtil.toNumber(totalAmount.toString()),
-          paidAmount: DecimalUtil.toNumber(paidAmount),
-          discountAmount: DecimalUtil.toNumber(discountAmount.toString()),
+          originalAmount: coursePackage.totalAmount,
+          discountAmount,
+          contractAmount,
+          paidAmount: contractAmount,
           totalLessons: coursePackage.totalLessons,
           usedLessons: 0,
           remainLessons: coursePackage.totalLessons,
+          unitPrice,
+          unearned: contractAmount,
           startDate,
           endDate,
-          payMethod: createDto.payMethod,
-          payTime: new Date(),
+          status: 1,
+          signedAt: new Date(),
           createdById: currentUser.userId,
           snapshotData: {
-            coursePackage: {
-              id: coursePackage.id,
-              name: coursePackage.name,
-              standardPrice: coursePackage.standardPrice,
-              totalLessons: coursePackage.totalLessons,
-              totalAmount: coursePackage.totalAmount,
-            },
-            student: {
-              id: student.id,
-              name: student.name,
-              code: student.code,
-            },
+            package: coursePackage,
+            student,
           },
+          remark: createDto.remark,
         },
       });
 
-      // 生成现金流入记录
-      await this.cashflowService.recordInflow(tx, {
-        bizType: 'CONTRACT',
-        bizId: newContract.id,
-        bizNo: newContract.contractNo,
-        contractId: newContract.id,
-        amount: DecimalUtil.toNumber(newContract.paidAmount.toString()),
-        payMethod: newContract.payMethod,
-        campusId: newContract.campusId,
+      // 创建收款记录
+      const payment = await this.createPayment(tx, {
+        contractId: contract.id,
+        campusId: createDto.campusId,
+        amount: contractAmount,
+        payMethod: createDto.payMethod,
+        paymentType: 'SIGN',
         createdById: currentUser.userId,
-        remark: `合同收款: ${newContract.contractNo}`,
+        remark: createDto.remark,
       });
 
-      return newContract;
+      return { contract, payment };
     });
 
-    return this.findOne(contract.id);
+    return result;
+  }
+
+  /**
+   * 添加收款（合同分期/续费）
+   */
+  async addPayment(createDto: any, currentUser: any) {
+    const contract = await this.prisma.contract.findUnique({
+      where: { id: createDto.contractId },
+      include: { student: true },
+    });
+    if (!contract) throw new NotFoundException('合同不存在');
+    if (contract.status !== 1) throw new BadRequestException('该合同不是正常状态');
+
+    const remainingAmount = DecimalUtil.subtract(
+      contract.contractAmount.toString(),
+      contract.paidAmount.toString()
+    );
+
+    if (DecimalUtil.gt(createDto.amount.toString(), remainingAmount)) {
+      throw new BadRequestException(`收款金额不能超过待收金额 ${remainingAmount}`);
+    }
+
+    const payment = await this.prisma.$transaction(async (tx) => {
+      // 创建收款记录
+      const newPayment = await this.createPayment(tx, {
+        contractId: createDto.contractId,
+        campusId: contract.campusId,
+        amount: createDto.amount,
+        payMethod: createDto.payMethod,
+        paymentType: createDto.paymentType || 'INSTALLMENT',
+        createdById: currentUser.userId,
+        remark: createDto.remark,
+        transactionNo: createDto.transactionNo,
+      });
+
+      // 更新合同已收金额
+      const newPaidAmount = DecimalUtil.add(contract.paidAmount.toString(), createDto.amount.toString());
+      
+      // 更新未消课金额（如果之前未消课金额为0，现在收款后需要计算）
+      const currentUnearned = contract.unearned.toNumber();
+      let newUnearned = currentUnearned;
+      
+      if (currentUnearned === 0 && contract.remainLessons > 0) {
+        // 首次收款或之前未设置未消课金额
+        newUnearned = DecimalUtil.toNumber(
+          DecimalUtil.multiply(contract.unitPrice.toString(), contract.remainLessons.toString())
+        );
+      }
+
+      await tx.contract.update({
+        where: { id: createDto.contractId },
+        data: {
+          paidAmount: DecimalUtil.toNumber(newPaidAmount),
+          unearned: newUnearned,
+        },
+      });
+
+      return newPayment;
+    });
+
+    return this.findOne(payment.id);
   }
 
   /**
    * 获取收款记录列表
    */
   async findAll(query: QueryPaymentDto) {
-    const { page = 1, pageSize = 20, campusId, payMethod, startDate, endDate, keyword } = query;
+    const { page = 1, pageSize = 20, campusId, payMethod, paymentType, startDate, endDate, keyword } = query;
 
-    const where: any = { direction: 1 }; // 只查收入
+    const where: any = { status: 1 };
 
     if (campusId) where.campusId = campusId;
     if (payMethod) where.payMethod = payMethod;
+    if (paymentType) where.paymentType = paymentType;
 
     if (keyword) {
       where.OR = [
-        { bizNo: { contains: keyword } },
+        { paymentNo: { contains: keyword } },
         { remark: { contains: keyword } },
       ];
     }
 
     if (startDate && endDate) {
-      where.createdAt = {
+      where.paidAt = {
         gte: new Date(startDate),
         lte: new Date(endDate),
       };
     }
 
     const [data, total] = await Promise.all([
-      this.prisma.cashFlow.findMany({
+      this.prisma.payment.findMany({
         where,
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -155,10 +226,12 @@ export class PaymentService {
               package: { select: { id: true, name: true } },
             },
           },
+          campus: { select: { id: true, name: true } },
+          createdBy: { select: { id: true, realName: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { paidAt: 'desc' },
       }),
-      this.prisma.cashFlow.count({ where }),
+      this.prisma.payment.count({ where }),
     ]);
 
     return new PaginatedResponseDto(data, total, page, pageSize);
@@ -168,60 +241,76 @@ export class PaymentService {
    * 获取收款详情
    */
   async findOne(id: string) {
-    const contract = await this.prisma.contract.findUnique({
+    const payment = await this.prisma.payment.findUnique({
       where: { id },
       include: {
-        student: true,
+        contract: {
+          include: {
+            student: true,
+            package: true,
+          },
+        },
         campus: true,
-        package: true,
         createdBy: { select: { id: true, realName: true } },
       },
     });
 
-    if (!contract) throw new NotFoundException('收款记录不存在');
-
-    return contract;
+    if (!payment) throw new NotFoundException('收款记录不存在');
+    return payment;
   }
 
   /**
    * 收款统计
    */
   async getStatistics(campusId?: string, startDate?: string, endDate?: string) {
-    const where: any = {};
+    const where: any = { status: 1 };
     if (campusId) where.campusId = campusId;
     if (startDate && endDate) {
-      where.createdAt = {
+      where.paidAt = {
         gte: new Date(startDate),
         lte: new Date(endDate),
       };
     }
 
-    // 合同收款统计
-    const contractStats = await this.prisma.contract.aggregate({
+    // 收款统计
+    const paymentStats = await this.prisma.payment.aggregate({
       where,
       _count: true,
-      _sum: { paidAmount: true, discountAmount: true },
+      _sum: { amount: true },
     });
 
     // 按支付方式分组
-    const byPayMethod = await this.prisma.contract.groupBy({
+    const byPayMethod = await this.prisma.payment.groupBy({
       by: ['payMethod'],
       where,
       _count: true,
-      _sum: { paidAmount: true },
+      _sum: { amount: true },
+    });
+
+    // 按收款类型分组
+    const byPaymentType = await this.prisma.payment.groupBy({
+      by: ['paymentType'],
+      where,
+      _count: true,
+      _sum: { amount: true },
     });
 
     return {
       summary: {
-        totalContracts: contractStats._count,
-        totalPaidAmount: contractStats._sum.paidAmount || 0,
-        totalDiscountAmount: contractStats._sum.discountAmount || 0,
+        totalPayments: paymentStats._count,
+        totalAmount: paymentStats._sum.amount || 0,
       },
       byPayMethod: byPayMethod.map((p) => ({
         payMethod: p.payMethod,
         payMethodName: this.getPayMethodName(p.payMethod),
         count: p._count,
-        amount: p._sum.paidAmount || 0,
+        amount: p._sum.amount || 0,
+      })),
+      byPaymentType: byPaymentType.map((t) => ({
+        paymentType: t.paymentType,
+        paymentTypeName: this.getPaymentTypeName(t.paymentType),
+        count: t._count,
+        amount: t._sum.amount || 0,
       })),
     };
   }
@@ -236,20 +325,21 @@ export class PaymentService {
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     const where: any = {
-      createdAt: { gte: today, lt: tomorrow },
+      status: 1,
+      paidAt: { gte: today, lt: tomorrow },
     };
     if (campusId) where.campusId = campusId;
 
-    const stats = await this.prisma.contract.aggregate({
+    const stats = await this.prisma.payment.aggregate({
       where,
       _count: true,
-      _sum: { paidAmount: true },
+      _sum: { amount: true },
     });
 
     return {
       date: today.toISOString().slice(0, 10),
-      contractCount: stats._count,
-      totalAmount: stats._sum.paidAmount || 0,
+      paymentCount: stats._count,
+      totalAmount: stats._sum.amount || 0,
     };
   }
 
@@ -275,5 +365,14 @@ export class PaymentService {
       POS: 'POS刷卡',
     };
     return methods[code] || code;
+  }
+
+  private getPaymentTypeName(code: string): string {
+    const types: Record<string, string> = {
+      SIGN: '签约首付',
+      INSTALLMENT: '分期付款',
+      RENEWAL: '续费',
+    };
+    return types[code] || code;
   }
 }

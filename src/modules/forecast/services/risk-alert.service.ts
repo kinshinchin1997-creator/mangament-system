@@ -126,10 +126,11 @@ export class RiskAlertService {
     let inactiveCount = 0;
 
     for (const studentId of studentIds) {
-      const recentLesson = await this.prisma.lessonRecord.findFirst({
+      const recentLesson = await this.prisma.lesson.findFirst({
         where: {
           studentId,
-          attendDate: { gte: thresholdDate },
+          status: 1,
+          lessonDate: { gte: thresholdDate },
         },
       });
 
@@ -154,23 +155,27 @@ export class RiskAlertService {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const where: any = { createdAt: { gte: thirtyDaysAgo } };
-    if (campusId) where.campusId = campusId;
+    const paymentWhere: any = { status: 1, paidAt: { gte: thirtyDaysAgo } };
+    const refundWhere: any = { status: 3, refundedAt: { gte: thirtyDaysAgo } };
+    if (campusId) {
+      paymentWhere.campusId = campusId;
+      refundWhere.campusId = campusId;
+    }
 
     // 统计收入
-    const incomeStats = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: 1 },
+    const incomeStats = await this.prisma.payment.aggregate({
+      where: paymentWhere,
       _sum: { amount: true },
     });
 
     // 统计退费
-    const refundStats = await this.prisma.cashFlow.aggregate({
-      where: { ...where, direction: -1 },
-      _sum: { amount: true },
+    const refundStats = await this.prisma.refund.aggregate({
+      where: refundWhere,
+      _sum: { actualAmount: true },
     });
 
     const totalIncome = Number(incomeStats._sum.amount || 0);
-    const totalRefund = Number(refundStats._sum.amount || 0);
+    const totalRefund = Number(refundStats._sum.actualAmount || 0);
 
     const refundRate = totalIncome > 0 ? (totalRefund / totalIncome) * 100 : 0;
 
@@ -183,4 +188,3 @@ export class RiskAlertService {
     };
   }
 }
-
