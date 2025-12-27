@@ -65,7 +65,7 @@ export class ContractService {
 
       // 如果有首付金额，创建收款记录
       if (createDto.paidAmount && DecimalUtil.gt(createDto.paidAmount.toString(), '0')) {
-        await this.paymentService.createPayment(tx, {
+        await this.paymentService.createPaymentInTransaction(tx, {
           contractId: newContract.id,
           campusId: newContract.campusId,
           amount: createDto.paidAmount,
